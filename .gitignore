@@ -1,0 +1,60 @@
+# Dependencies and generated web output
+node_modules/
+dist/
+coverage/
+playwright-report/
+test-results/
+*.log
+npm-debug.log*
+
+# Private local projects, databases, exports, and backups
+.data/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.db
+*.db-shm
+*.db-wal
+backups/
+exports/
+local-assets/
+*-backup.json
+*.house-project.json
+
+# Local environment/package credentials and machine overrides
+.env
+.env.*
+!.env.example
+.npmrc
+*.local
+*.tgz
+
+# Personal branding and the legacy Windows launcher stay on this machine
+public/house_icon.png
+house_icon.png
+start-house-studio.bat
+
+# Tauri/Rust generated binaries and signing material
+src-tauri/target/
+target/
+src-tauri/binaries/*
+!src-tauri/binaries/.gitkeep
+src-tauri/resources/server/*
+!src-tauri/resources/server/.gitkeep
+src-tauri/resources/licenses/*
+!src-tauri/resources/licenses/.gitkeep
+*.pfx
+*.p12
+*.pem
+*.key
+*.crt
+*.cer
+*.msi
+*-setup.exe
+*.sig
+
+# Editor and operating-system files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

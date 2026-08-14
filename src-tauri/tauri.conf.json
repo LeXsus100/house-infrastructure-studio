@@ -1,0 +1,59 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "House Infrastructure Studio",
+  "version": "0.1.0",
+  "identifier": "studio.house.infrastructure",
+  "build": {
+    "beforeDevCommand": "npm run dev:web",
+    "devUrl": "http://127.0.0.1:5173",
+    "beforeBuildCommand": "npm run build && npm run desktop:prepare",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "House Infrastructure Studio",
+        "width": 1600,
+        "height": 980,
+        "minWidth": 1100,
+        "minHeight": 700,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' http://127.0.0.1:4281; img-src 'self' data: blob: http://127.0.0.1:4281; style-src 'self' 'unsafe-inline'; font-src 'self' data:; script-src 'self'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "category": "Productivity",
+    "shortDescription": "Local residential infrastructure documentation editor",
+    "longDescription": "A local-only 3D editor for documenting residential electrical, data, HVAC, heating, security and plumbing infrastructure.",
+    "externalBin": ["binaries/house-studio-node"],
+    "resources": {
+      "resources/server/": "server/",
+      "resources/licenses/": "licenses/",
+      "../server/migrations/": "migrations/"
+    },
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "embedBootstrapper",
+        "silent": true
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "displayLanguageSelector": true,
+        "languages": ["English", "Italian"]
+      }
+    }
+  }
+}

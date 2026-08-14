@@ -1,0 +1,64 @@
+{
+  "name": "house-infrastructure-studio",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Local-only 3D residential infrastructure and MEP documentation editor.",
+  "license": "MIT",
+  "author": "Luigi",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LeXsus100/house-infrastructure-studio.git"
+  },
+  "homepage": "https://github.com/LeXsus100/house-infrastructure-studio#readme",
+  "bugs": {
+    "url": "https://github.com/LeXsus100/house-infrastructure-studio/issues"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "dev": "concurrently -k -n API,WEB -c yellow,cyan \"npm:dev:server\" \"npm:dev:web\"",
+    "dev:web": "vite --host 127.0.0.1 --port 5173",
+    "dev:server": "tsx watch server/index.ts",
+    "build": "tsc -b config/tsconfig.json && vite build",
+    "start": "tsx server/start.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "db:path": "tsx server/db-path.ts",
+    "db:reset": "tsx server/reset-db.ts",
+    "tauri": "tauri",
+    "desktop:prepare": "node scripts/prepare-desktop.mjs",
+    "desktop:dev": "npm run desktop:prepare && tauri dev",
+    "desktop:build": "tauri build --bundles nsis",
+    "version:set": "node scripts/set-version.mjs"
+  },
+  "dependencies": {
+    "@react-three/drei": "^10.7.6",
+    "@react-three/fiber": "^9.3.0",
+    "express": "^5.1.0",
+    "jszip": "^3.10.1",
+    "lucide-react": "^0.468.0",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "three": "^0.179.1",
+    "zod": "^4.1.5"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4",
+    "@types/express": "^5.0.3",
+    "@types/node": "^24.3.0",
+    "@types/react": "^19.1.10",
+    "@types/react-dom": "^19.1.7",
+    "@types/supertest": "^6.0.3",
+    "@types/three": "^0.179.0",
+    "@vitejs/plugin-react": "^5.0.2",
+    "concurrently": "^9.2.1",
+    "esbuild": "^0.25.12",
+    "supertest": "^7.1.4",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2",
+    "vite": "^7.1.3",
+    "vitest": "^3.2.4"
+  }
+}

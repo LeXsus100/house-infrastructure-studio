@@ -1,0 +1,45 @@
+name: Bug report
+description: Report a reproducible defect using non-private example data.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: "Do not upload real floor plans, house photographs, project databases, backups, addresses, credentials, or signing keys."
+  - type: textarea
+    id: summary
+    attributes:
+      label: Problem
+      description: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+      description: Use a minimal synthetic project.
+      placeholder: "1. Open…\n2. Select…\n3. Observe…"
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: Runtime
+      options:
+        - Windows desktop application
+        - Local browser/server
+        - Development mode
+    validations:
+      required: true
+  - type: textarea
+    id: validation
+    attributes:
+      label: Additional non-private context
+      description: Include logs or screenshots only after removing private house information.

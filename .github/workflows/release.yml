@@ -1,0 +1,36 @@
+name: Build Windows installer draft
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  windows-installer:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - run: npm ci
+      - run: npm test
+      - uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tauriScript: npm run tauri
+          tagName: ${{ github.ref_name }}
+          releaseName: House Infrastructure Studio ${{ github.ref_name }}
+          releaseBody: The unsigned Windows NSIS installer is attached below. Review the draft and its assets before publishing it.
+          generateReleaseNotes: true
+          releaseDraft: true
+          prerelease: false
+          args: --bundles nsis
