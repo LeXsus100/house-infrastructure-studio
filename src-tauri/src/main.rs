@@ -27,6 +27,7 @@ fn main() {
                 .sidecar("house-studio-node")?
                 .arg(server_entry)
                 .env("PORT", "4281")
+                .env("HOUSE_INFRASTRUCTURE_DESKTOP", "1")
                 .env("HOUSE_INFRASTRUCTURE_DB_PATH", database_path)
                 .env("HOUSE_INFRASTRUCTURE_MIGRATIONS_DIR", migrations_dir)
                 .spawn()?;

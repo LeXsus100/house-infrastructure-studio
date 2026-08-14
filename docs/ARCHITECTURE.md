@@ -38,7 +38,7 @@ Tauri application-data directory
   └─ projects/<project UUID>/{project.json,assets/,exports/}
 ```
 
-`scripts/prepare-desktop.mjs` bundles `server/desktop.ts`, copies the current Node.js 24 runtime as a target-triple Tauri sidecar, and obtains the matching official Node.js license for the installer resources. Tauri embeds the neutral Windows icons and WebView2 bootstrapper, then produces a current-user NSIS installer. Generated sidecars, licenses, Rust targets, and installers are ignored.
+`scripts/prepare-desktop.mjs` bundles `server/desktop.ts`, copies the current Node.js 24 runtime as a target-triple Tauri sidecar, and obtains the matching official Node.js license for the installer resources. Tauri marks that process as the desktop entry so the bundled browser/server fallback does not open the port a second time, while the client waits for `/api/health` before loading project data. Tauri embeds the neutral Windows icons and WebView2 bootstrapper, then produces a current-user NSIS installer. Generated sidecars, licenses, Rust targets, and installers are ignored.
 
 ## Client
 

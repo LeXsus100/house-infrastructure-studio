@@ -113,6 +113,7 @@ export default function App() {
     let active = true;
     (async () => {
       try {
+        await api.waitUntilReady();
         const list = await api.listProjects();
         const loaded = upgradeProject(list[0] ? await api.getProject(list[0].id) : await api.saveProject(createDefaultProject()));
         if (!active) return;

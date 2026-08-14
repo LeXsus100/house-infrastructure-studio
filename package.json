@@ -1,10 +1,10 @@
 {
   "name": "house-infrastructure-studio",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Local-only 3D residential infrastructure and MEP documentation editor.",
   "license": "MIT",
-  "author": "Luigi",
+  "author": "Luigi Casagrande",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/LeXsus100/house-infrastructure-studio.git"

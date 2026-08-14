@@ -30,6 +30,7 @@ local-assets/
 *.tgz
 
 # Personal branding and the legacy Windows launcher stay on this machine
+AGENTS.md
 public/house_icon.png
 house_icon.png
 start-house-studio.bat
