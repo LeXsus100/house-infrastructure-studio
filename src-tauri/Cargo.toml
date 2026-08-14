@@ -1,8 +1,8 @@
 [package]
 name = "house-infrastructure-studio"
-version = "0.1.0"
+version = "0.1.1"
 description = "Local residential infrastructure documentation editor"
-authors = ["House Infrastructure Studio contributors"]
+authors = ["Luigi Casagrande"]
 edition = "2021"
 
 [build-dependencies]

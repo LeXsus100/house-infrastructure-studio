@@ -25,4 +25,11 @@ const cargoPath = join(root, 'src-tauri', 'Cargo.toml');
 const cargo = await readFile(cargoPath, 'utf8');
 await writeFile(cargoPath, cargo.replace(/^(version\s*=\s*")[^"]+("\s*)$/m, `$1${version}$2`), 'utf8');
 
+const cargoLockPath = join(root, 'src-tauri', 'Cargo.lock');
+const cargoLock = await readFile(cargoLockPath, 'utf8');
+await writeFile(cargoLockPath, cargoLock.replace(
+  /(\[\[package\]\]\r?\nname = "house-infrastructure-studio"\r?\nversion = ")[^"]+("\r?\n)/,
+  `$1${version}$2`
+), 'utf8');
+
 console.log(`Set web and desktop application versions to ${version}.`);

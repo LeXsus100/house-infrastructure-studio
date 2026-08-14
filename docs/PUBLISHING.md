@@ -29,6 +29,7 @@ The following are deliberately local and ignored:
 
 - `.data/`, SQLite/WAL/SHM files, project JSON mirrors, blueprints, photographs, exports, and backups;
 - `local-assets/` (including `local-assets/branding/house_icon.png`), plus any legacy `public/house_icon.png` or root `house_icon.png`;
+- `AGENTS.md`, which contains local assistant maintenance instructions rather than public product documentation;
 - `start-house-studio.bat`;
 - `.env`, `.env.*` except `.env.example`, `.npmrc`, package tarballs, and `*.local` overrides;
 - generated web/Tauri/Rust output, installers, Node sidecar binaries, and signing material.
@@ -81,6 +82,7 @@ Initialize the repository and verify the sensitive paths. Each `git check-ignore
 ```powershell
 git init -b main
 git check-ignore --no-index -v .data/casa.sqlite
+git check-ignore --no-index -v AGENTS.md
 git check-ignore --no-index -v local-assets/branding/house_icon.png
 git check-ignore --no-index -v public/house_icon.png
 git check-ignore --no-index -v start-house-studio.bat
@@ -97,12 +99,12 @@ git diff --cached --check
 git diff --cached --name-only
 ```
 
-The staged list must not contain `.data`, `local-assets`, a database, any `house_icon.png`, `start-house-studio.bat`, `.env`, `.npmrc`, a project backup, a blueprint/photo, `node_modules`, `dist`, `src-tauri/target`, an installer, or a signing key.
+The staged list must not contain `AGENTS.md`, `.data`, `local-assets`, a database, any `house_icon.png`, `start-house-studio.bat`, `.env`, `.npmrc`, a project backup, a blueprint/photo, `node_modules`, `dist`, `src-tauri/target`, an installer, or a signing key.
 
 Run these final negative checks; all should produce no path:
 
 ```powershell
-git ls-files .data local-assets public/house_icon.png house_icon.png start-house-studio.bat .env .npmrc
+git ls-files AGENTS.md .data local-assets public/house_icon.png house_icon.png start-house-studio.bat .env .npmrc
 git ls-files -ci --exclude-standard
 ```
 
@@ -146,7 +148,7 @@ npm audit
 Prefer staging the exact files you intend to publish:
 
 ```powershell
-git add src server shared tests docs public font config src-tauri scripts .github README.md AGENTS.md SECURITY.md index.html vite.config.ts package.json package-lock.json .gitignore
+git add src server shared tests docs public font config src-tauri scripts .github README.md index.html vite.config.ts package.json package-lock.json .gitignore
 git status --short
 git diff --cached --check
 git diff --cached --name-only
@@ -179,7 +181,9 @@ src-tauri/target/release/bundle/nsis/
 
 Install it on a test Windows account or machine, create a disposable project, restart the app, and verify persistence before making a GitHub Release. The installer and generated sidecar are ignored and must not be added to the source commit.
 
-The current installer is unsigned, so Windows SmartScreen may warn users. Code signing is a separate trust decision; never commit a certificate or private key. Store signing credentials only as protected GitHub secrets if signing is added later.
+The current installer is unsigned, so Windows SmartScreen may warn users. A SHA-256 checksum proves that a download matches the release asset, but it does not establish publisher identity or suppress SmartScreen.
+
+For public Authenticode signing, use a certificate or managed signing service whose chain is trusted by Windows, timestamp every signature, and sign every release with the same validated publisher identity. A self-signed certificate is suitable only for controlled test machines. [Microsoft's current code-signing guidance](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/code-signing-options) recommends Artifact Signing for eligible non-Store publishers, while qualifying open-source projects can also apply to [SignPath Foundation](https://signpath.org/). Even a correctly signed new app can show an initial SmartScreen warning while reputation develops; Microsoft Store distribution is the most reliable path to avoiding download warnings. Once a provider is selected, follow [Tauri's Windows signing configuration](https://v2.tauri.app/distribute/sign/windows/). Never commit a certificate, private key, token, or signing profile. Store CI signing credentials only as protected GitHub secrets and add the signing step only after choosing a provider.
 
 ## 9. Create a GitHub Release manually
 
@@ -202,9 +206,15 @@ The tag push starts `.github/workflows/release.yml`. The official Tauri action b
 
 1. Open **GitHub → Actions** and wait for **Build Windows installer draft** to finish.
 2. Open **GitHub → Releases → Drafts**.
-3. Verify the tag, generated notes, file name, installer size, and downloaded installer.
-4. Test that downloaded installer.
-5. Click **Publish release** only when satisfied.
+3. Verify the tag, generated notes, file name, installer size, downloaded installer, and matching `.sha256` asset.
+4. Verify the download before running it ([open-source verification script](https://github.com/LeXsus100/house-infrastructure-studio/blob/main/scripts/verify-release.ps1)):
+
+```powershell
+powershell -File .\verify-release.ps1 -InstallerPath '.\downloaded-installer.exe'
+```
+
+5. Test that downloaded installer.
+6. Click **Publish release** only when satisfied.
 
 If the build or test is wrong, do not publish the draft. Fix the source and use a new patch version/tag such as `v0.2.1`; avoiding moved/reused release tags keeps downloads auditable.
 

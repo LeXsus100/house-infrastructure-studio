@@ -146,7 +146,9 @@ export function createApp(repository = new ProjectRepository(openDatabase()), op
   return app;
 }
 
-const isMain = process.argv[1] && resolve(fileURLToPath(import.meta.url)) === resolve(process.argv[1]);
+const isMain = process.env.HOUSE_INFRASTRUCTURE_DESKTOP !== '1'
+  && process.argv[1]
+  && resolve(fileURLToPath(import.meta.url)) === resolve(process.argv[1]);
 if (isMain) {
   const port = Number(process.env.PORT || 4280);
   createApp().listen(port, '127.0.0.1', () => console.log(`${SOFTWARE_NAME} local API: http://127.0.0.1:${port}`));

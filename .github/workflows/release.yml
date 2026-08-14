@@ -29,8 +29,23 @@ jobs:
           tauriScript: npm run tauri
           tagName: ${{ github.ref_name }}
           releaseName: House Infrastructure Studio ${{ github.ref_name }}
-          releaseBody: The unsigned Windows NSIS installer is attached below. Review the draft and its assets before publishing it.
+          releaseBody: |
+            The unsigned Windows NSIS installer and its SHA-256 checksum are attached below. Review and test the draft before publishing it.
+
+            Verify the download before running it ([open-source verification script](https://github.com/LeXsus100/house-infrastructure-studio/blob/${{ github.ref_name }}/scripts/verify-release.ps1)): download the installer and its matching `.sha256` file, then pass the installer path to the script.
           generateReleaseNotes: true
           releaseDraft: true
           prerelease: false
           args: --bundles nsis
+      - name: Attach SHA-256 checksum
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $releaseInstallers = @(Get-ChildItem -LiteralPath "src-tauri/target/release/bundle/nsis" -Filter "*-setup.exe" -File)
+          if ($releaseInstallers.Count -ne 1) { throw "Expected one NSIS installer, found $($releaseInstallers.Count)." }
+          $releaseInstaller = $releaseInstallers[0]
+          $releaseHash = (Get-FileHash -LiteralPath $releaseInstaller.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          $releaseChecksumPath = "$($releaseInstaller.FullName).sha256"
+          [System.IO.File]::WriteAllText($releaseChecksumPath, "$releaseHash *$($releaseInstaller.Name)`n", [System.Text.UTF8Encoding]::new($false))
+          gh release upload "${{ github.ref_name }}" $releaseChecksumPath --clobber
