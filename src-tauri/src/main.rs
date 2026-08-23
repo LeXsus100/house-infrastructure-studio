@@ -59,9 +59,9 @@ fn main() {
                 ),
             );
             if !sidecar_path.is_file() {
-                return Err(tauri::Error::AssetNotFound(
+                return Err(Box::new(tauri::Error::AssetNotFound(
                     sidecar_path.to_string_lossy().into_owned(),
-                ));
+                )));
             }
 
             let (mut events, child) = app
