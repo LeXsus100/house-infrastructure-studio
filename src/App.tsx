@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { Camera } from 'lucide-react';
 import type { Device, DevicePort, DeviceType, Floor, Measurement, PhotoCategory, PhotoMarker, ProjectPhoto, ProjectSnapshot, Room, RoomCategory, Route, Selection, ServiceCategory, ThemeMode, ToolMode, Vec2, Vec3, ViewMode, Wall } from '../shared/types';
 import { SOFTWARE_NAME } from '../shared/branding';
@@ -74,6 +74,7 @@ export default function App() {
   const [furnitureOpen, setFurnitureOpen] = useState(false);
   const [pendingTransition, setPendingTransition] = useState<{ position: Vec3; wallId?: string }>();
   const [projectList, setProjectList] = useState<Array<{ id: string; title: string; updatedAt: string }>>([]);
+  const [firstRun, setFirstRun] = useState(false);
   const [status, setStatus] = useState({ x: 0, y: 0, z: 0 });
   const [notice, setNotice] = useState('Ready');
   const [page, setPage] = useState<'editor' | 'overview' | 'light' | 'photo'>('editor');
@@ -120,14 +121,39 @@ export default function App() {
       try {
         await api.waitUntilReady();
         const list = await api.listProjects();
-        const loaded = upgradeProject(list[0] ? await api.getProject(list[0].id) : await api.saveProject(createDefaultProject()));
+        if (!list.length) {
+          if (!active) return;
+          setProjectList([]);
+          setFirstRun(true);
+          setNotice('Create your first local project.');
+          return;
+        }
+        const loaded = upgradeProject(await api.getProject(list[0].id));
         if (!active) return;
+        setFirstRun(false);
         setHistory(createHistory(loaded)); setActiveFloorId(startingFloorId(loaded)); setVisibleServices(new Set(loaded.categories.map((category) => category.serviceCategory)));
-        setProjectList(list[0] ? list.map((item) => item.id === loaded.id ? { ...item, title: loaded.title } : item) : [{ id: loaded.id, title: loaded.title, updatedAt: loaded.updatedAt }]);
+        setProjectList(list.map((item) => item.id === loaded.id ? { ...item, title: loaded.title } : item));
       } catch (error) { setNotice(error instanceof Error ? error.message : 'Could not start the local project.'); }
     })();
     return () => { active = false; };
   }, []);
+
+  const createProject = async (title: string) => {
+    const name = title.trim() || 'Untitled house project';
+    setNotice('Creating local project…');
+    try {
+      const created = upgradeProject(await api.saveProject(createDefaultProject(name)));
+      setHistory(createHistory(created));
+      setActiveFloorId(startingFloorId(created));
+      setVisibleServices(new Set(created.categories.map((category) => category.serviceCategory)));
+      setProjectList([{ id: created.id, title: created.title, updatedAt: created.updatedAt }]);
+      setFirstRun(false);
+      setNotice('Local project created.');
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'Could not create the local project.');
+      throw error;
+    }
+  };
 
   const saveNow = useCallback(async (snapshot?: ProjectSnapshot) => {
     const target = snapshot ?? history?.present; if (!target) return;
@@ -583,7 +609,10 @@ export default function App() {
 
   const selectedWallId = selection?.type === 'wall' && selection.ids.length === 1 ? selection.ids[0] : undefined;
   const selectedRoomName = project?.rooms.find((room) => selection?.ids.includes(room.id))?.name ?? '—';
-  if (!project || !history) return <div className="loading-screen"><img src={appIconUrl} alt="" /><strong>{SOFTWARE_NAME}</strong><span>{notice === 'Ready' ? 'Opening the local infrastructure project…' : notice}</span></div>;
+  if (!project || !history) {
+    if (firstRun) return <FirstRunScreen appIconUrl={appIconUrl} notice={notice} onCreate={createProject} />;
+    return <div className="loading-screen"><img src={appIconUrl} alt="" /><strong>{SOFTWARE_NAME}</strong><span>{notice === 'Ready' ? 'Starting the local desktop service…' : notice}</span></div>;
+  }
   const focusLightingItem = (deviceId?: string, routeId?: string) => {
     const device = deviceId ? project.devices.find((item) => item.id === deviceId) : undefined; const route = routeId ? project.routes.find((item) => item.id === routeId) : undefined;
     const targetFloorId = device?.accessibleFloorIds?.includes(activeFloorId) ? activeFloorId : device?.floorId ?? route?.floorId; if (targetFloorId) setActiveFloorId(targetFloorId);
@@ -641,4 +670,15 @@ function RouteLayoutModelReview({ index, count, item, solution, onToggleSolution
 function ProjectManager({ appIconUrl, projects, activeId, onClose, onOpen, onNew, onDuplicate, onDelete }: { appIconUrl: string; projects: Array<{ id: string; title: string; updatedAt: string }>; activeId: string; onClose: () => void; onOpen: (id: string) => void; onNew: () => void; onDuplicate: (id: string) => void; onDelete: (id: string) => void }) {
   const { t } = useI18n();
   return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><div className="project-dialog" role="dialog" aria-modal="true"><header><div><strong>{t('Local projects')}</strong><span>{t('Each project has an isolated local workspace folder')}</span></div><button onClick={onClose}>×</button></header><div className="project-list">{projects.map((project) => <div key={project.id} className={project.id === activeId ? 'active' : ''}><img src={appIconUrl} alt="" /><div><strong>{project.title}</strong><span>{t('Updated')} {new Date(project.updatedAt).toLocaleString()}</span></div><button onClick={() => onOpen(project.id)}>{project.id === activeId ? t('Current project') : t('Open')}</button><button onClick={() => onDuplicate(project.id)}>{t('Duplicate')}</button><button className="danger" onClick={() => onDelete(project.id)}>{t('Delete')}</button></div>)}</div><footer><button className="primary" onClick={onNew}>{t('Create another project')}</button></footer></div></div>;
+}
+
+function FirstRunScreen({ appIconUrl, notice, onCreate }: { appIconUrl: string; notice: string; onCreate: (title: string) => Promise<void> }) {
+  const [title, setTitle] = useState('Untitled house project');
+  const [creating, setCreating] = useState(false);
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    setCreating(true);
+    try { await onCreate(title); } catch { /* the app notice contains the actionable error */ } finally { setCreating(false); }
+  };
+  return <main className="first-run-screen"><div className="first-run-card"><img src={appIconUrl} alt="" /><span className="eyebrow">LOCAL PROJECT SETUP</span><h1>Start a new infrastructure project</h1><p>Your project database and a dedicated workspace folder will be created locally on this computer. Nothing is uploaded.</p><form onSubmit={submit}><label htmlFor="first-project-title">Project name</label><input id="first-project-title" value={title} onChange={(event) => setTitle(event.target.value)} autoFocus maxLength={120} /><button className="primary" type="submit" disabled={creating}>{creating ? 'Creating…' : 'Create local project'}</button></form>{notice !== 'Create your first local project.' && <span className="first-run-notice">{notice}</span>}</div></main>;
 }

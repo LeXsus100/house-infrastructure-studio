@@ -31,7 +31,7 @@ npm run dev
 
 Open [http://127.0.0.1:5173](http://127.0.0.1:5173). The local data API runs at `http://127.0.0.1:4280` and is proxied by Vite. Both listeners bind to localhost only.
 
-The first launch creates an `Untitled house project` with one empty ground floor. Project names are ordinary user data: the software does not reserve or impose a house name. It does not invent rooms, address data, people, coordinates, or construction metadata.
+The first launch opens a short local-project setup screen. Enter a project name to create its SQLite record and dedicated workspace folder with one empty ground floor. Project names are ordinary user data: the software does not reserve or impose a house name. It does not invent rooms, address data, people, coordinates, or construction metadata.
 
 ## Test
 
@@ -82,7 +82,7 @@ Print the exact resolved path:
 npm run db:path
 ```
 
-Stop the server, then reset the database and recreate an empty default project on the next launch:
+Stop the server, then reset the database; the next launch will show the local-project setup screen:
 
 ```powershell
 npm run db:reset
