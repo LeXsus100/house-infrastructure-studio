@@ -1,4 +1,4 @@
-import { BarChart3, Download, Eye, FolderOpen, Home, Image, Lightbulb, Maximize, Moon, PanelTop, Redo2, RotateCcw, Save, Settings, Sun, Undo2 } from 'lucide-react';
+import { BarChart3, Download, Eye, FolderOpen, Home, Image, Lightbulb, Moon, PanelTop, Redo2, RotateCcw, Save, Settings, Sun, Undo2 } from 'lucide-react';
 import type { ProjectSnapshot, ThemeMode, ViewMode } from '../../shared/types';
 import type { ViewCommand } from '../editor/HouseViewport';
 import { useI18n } from '../lib/i18n';
@@ -18,7 +18,7 @@ interface Props {
   onUndo: () => void;
   onRedo: () => void;
   onViewMode: (mode: ViewMode) => void;
-  onProjection: (projection: 'perspective' | 'orthographic') => void;
+  onToggle2D: () => void;
   onView: (command: ViewCommand) => void;
   onTheme: (theme: ThemeMode) => void;
   onOpenProjectManager: () => void;
@@ -41,11 +41,10 @@ export function TopToolbar(props: Props) {
       <button title={t('Undo (Ctrl+Z)')} disabled={!props.canUndo} onClick={props.onUndo}><Undo2 size={17} /></button><button title={t('Redo (Ctrl+Y)')} disabled={!props.canRedo} onClick={props.onRedo}><Redo2 size={17} /></button>
       <span className="separator" />
       <button disabled={props.page === 'light'} className={props.viewMode === 'xray' ? 'xray-toggle active' : 'xray-toggle'} title={t(props.page === 'light' ? 'Lighting view always uses X-ray.' : 'Toggle X-ray (X): make walls transparent and reveal services')} aria-pressed={props.viewMode === 'xray'} onClick={() => props.onViewMode(props.viewMode === 'xray' ? 'normal' : 'xray')}><Eye size={17} /><span>{t(props.viewMode === 'xray' ? 'X-ray ON' : 'X-ray')}</span><kbd>X</kbd></button>
-      <button title={t('Toggle perspective / orthographic')} onClick={() => props.onProjection(props.projection === 'perspective' ? 'orthographic' : 'perspective')}><PanelTop size={17} /><span>{t(props.projection === 'perspective' ? 'Perspective' : 'Orthographic')}</span></button>
-      <ToolbarMenu icon={<Maximize size={16} />} label={t('Views')} options={[
-        { value: 'top', label: t('Top') }, { value: 'iso', label: t('Isometric') },
-        { value: 'fit-house', label: t('Fit full house') }, { value: 'fit-selection', label: t('Fit selection') }
-      ]} onSelect={(value) => props.onView(value as ViewCommand)} />
+      <button data-tutorial="2d-view" className={props.projection === 'orthographic' ? 'view-2d-toggle active' : 'view-2d-toggle'} aria-pressed={props.projection === 'orthographic'}
+        title={t(props.projection === 'orthographic' ? 'Disable 2D view and return to perspective' : 'Enable 2D orthographic plan view')} onClick={props.onToggle2D}>
+        <PanelTop size={17} /><span>{t('2D View')}</span>
+      </button>
       <button title={t('Reset camera')} onClick={() => props.onView('reset')}><RotateCcw size={17} /></button>
       <span className="separator" />
       <ToolbarMenu icon={<Download size={16} />} label={t('Export')} options={[

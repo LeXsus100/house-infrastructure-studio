@@ -2,7 +2,7 @@ import type { DevicePort, DevicePortTemplate, ProjectSnapshot } from '../../shar
 import { categoryIdForService, consolidatedServiceCategory, DEFAULT_CATEGORIES, DEFAULT_DEVICE_TYPES } from '../catalog';
 import { defaultDeviceDisplayColor, ETHERNET_PAIR_COLORS, ITALIAN_CONDUCTOR_COLORS, PROJECT_SERVICE_COLORS } from './italianColors';
 import { formatRouteName } from './routeNaming';
-import { ceilingRouteHeight, confineRouteToAssociatedWalls, devicePlanObstacle, distance3, floorRouteHeight, mountingRotation, preferredOrthogonalPlaneRoute, resolveRouteConflicts, routePointsKeepDeviceClearance, routeSegmentAvoidsOpenings, routeSegmentsOnWall, separateResidualCoincidentSegments, simplifyRoutePoints, stackFloorRoutes, verticalTransitionBounds, wallLength, wallLocalToWorld, wallServiceDepthMm, worldToWallLocal } from './geometry';
+import { ceilingRouteHeight, confineRouteToAssociatedWalls, devicePlanObstacle, distance3, floorRouteHeight, isAutomaticRoutePoint, mountingRotation, preferredOrthogonalPlaneRoute, resolveRouteConflicts, restoreLegacyAutomaticClearancePoints, routePointsKeepDeviceClearance, routeSegmentAvoidsOpenings, routeSegmentsOnWall, routeSurfaceBounds, separateResidualCoincidentSegments, simplifyRoutePoints, stackFloorRoutes, verticalTransitionBounds, wallLength, wallLocalToWorld, wallServiceDepthMm, worldToWallLocal } from './geometry';
 import { createDefaultRackSystem, PREPARED_RACK_DEPTH_MM, PREPARED_RACK_WIDTH_MM, rackHeightMm, synchronizeRackExternalPorts, upgradeLegacyPreparedRack } from './rack';
 import { validRiserRouteLinks } from './riser';
 import { DEFAULT_PROJECT_TITLE } from '../../shared/branding';
@@ -61,7 +61,7 @@ export function normalizeConcealedRouteSurfaces(project: ProjectSnapshot, routes
     const associatedWallIds = new Set([...route.wallIds, sourceWall?.id, destinationWall?.id].filter((id): id is string => !!id));
     const associatedWalls = project.walls.filter((wall) => associatedWallIds.has(wall.id));
     const escaped = route.points.slice(1).some((end, index) => {
-      const start = route.points[index]; if (distance3(start, end) <= 300) return false;
+      const start = route.points[index]; if (isAutomaticRoutePoint(start) || isAutomaticRoutePoint(end) || distance3(start, end) <= 300) return false;
       if (Math.abs(start.y - floorY) <= 5 && Math.abs(end.y - floorY) <= 5 || Math.abs(start.y - ceilingY) <= 5 && Math.abs(end.y - ceilingY) <= 5) return false;
       return !associatedWalls.some((wall) => routeSegmentsOnWall({ points: [start, end] }, wall).length > 0);
     });
@@ -299,7 +299,7 @@ export function upgradeProject(project: ProjectSnapshot): ProjectSnapshot {
     routes: (project.routes ?? []).map((route, index) => {
       const serviceCategory = consolidatedServiceCategory(route.serviceCategory); const conductorConfiguration = route.conductorConfiguration ?? (route.kind === 'cable' && serviceCategory === 'electrical' ? 'single-phase' : undefined); const ethernetTerminationStandard = route.ethernetTerminationStandard ?? (route.kind === 'cable' && serviceCategory === 'data' ? 'T568B' : undefined);
       const legacyNumber = route.name.match(/^(?:cable|pipe|duct)[-_ ]?(\d+)$/i)?.[1]; const name = legacyNumber ? formatRouteName(namingProject, serviceCategory, route.kind, route.floorId, Number(legacyNumber) || index + 1) : route.name;
-      return { ...route, name, serviceCategory, flowDirection: route.flowDirection ?? 'source-to-destination', colorSource: route.colorSource ?? 'projectConvention', conductorConfiguration, conductorColors: route.conductorColors ?? (conductorConfiguration && conductorConfiguration !== 'custom' ? structuredClone(ITALIAN_CONDUCTOR_COLORS[conductorConfiguration]) : undefined), ethernetTerminationStandard, ethernetPairColors: route.ethernetPairColors ?? (ethernetTerminationStandard ? structuredClone(ETHERNET_PAIR_COLORS[ethernetTerminationStandard]) : undefined) };
+      return { ...route, name, serviceCategory, points: restoreLegacyAutomaticClearancePoints(route.points ?? []), flowDirection: route.flowDirection ?? 'source-to-destination', colorSource: route.colorSource ?? 'projectConvention', conductorConfiguration, conductorColors: route.conductorColors ?? (conductorConfiguration && conductorConfiguration !== 'custom' ? structuredClone(ITALIAN_CONDUCTOR_COLORS[conductorConfiguration]) : undefined), ethernetTerminationStandard, ethernetPairColors: route.ethernetPairColors ?? (ethernetTerminationStandard ? structuredClone(ETHERNET_PAIR_COLORS[ethernetTerminationStandard]) : undefined) };
     }),
     measurements: (project.measurements ?? []).map((measurement) => ({ ...measurement, locked: measurement.locked ?? false })),
     exportPresets: exportPresets.length ? exportPresets : createDefaultProject().exportPresets,
@@ -339,8 +339,7 @@ export function upgradeProject(project: ProjectSnapshot): ProjectSnapshot {
     // Reapply the same route-creation invariant in persistence order: an older
     // installed run remains stable and each later run must clear what already
     // exists, independent of route kind or service category.
-    const shouldResolve = repaired.preferences.avoidRouteOverlaps && existing.length > 0;
-    const resolved = shouldResolve ? resolveRouteConflicts(separated, existing, repaired.preferences.routeOverlapPriorities, repaired.preferences.routeSeparationMm, repaired.preferences.routeDiameterMm, 10, repaired.walls).route : separated;
+    const resolved = resolveRouteConflicts(separated, repaired.preferences.avoidRouteOverlaps ? existing : [], repaired.preferences.routeOverlapPriorities, repaired.preferences.routeSeparationMm, repaired.preferences.routeDiameterMm, 10, repaired.walls, repaired.preferences.routeBendRadiusMm, routeSurfaceBounds(repaired.floors, route.floorId), repaired.preferences.routeTurnPenaltyMm, repaired.devices.filter((device) => device.floorId === route.floorId)).route;
     const confined = confineRouteToAssociatedWalls(resolved, repaired.walls); const normalized = normalizeConcealedRouteSurfaces({ ...repaired, routes: [confined] }, [confined])[0] ?? confined;
     items.push(normalized); return items;
   }, []);

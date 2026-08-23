@@ -17,11 +17,12 @@ import { PhotoMarkerDialog } from './components/PhotoMarkerDialog';
 import { PhotoPointCreateDialog } from './components/PhotoPointCreateDialog';
 import { PHOTO_CATEGORIES, PhotoSidebar } from './components/PhotoSidebar';
 import { PropertiesPanel } from './components/PropertiesPanel';
+import { ProjectTutorial } from './components/ProjectTutorial';
 import { SettingsDialog } from './components/SettingsDialog';
 import { TopToolbar } from './components/TopToolbar';
 import { ViewSnapshotDialog } from './components/ViewSnapshotDialog';
 import { HouseViewport, type ViewCommand } from './editor/HouseViewport';
-import { addVerticalClearanceAtCrossings, confineRouteToAssociatedWalls, constrainRoutePointToWallLining, devicePortWorldPosition, distance3, findRouteIntersections, mountingRotation, nearestWallPoint, orderWallBoundaryWithGaps, orthogonalizeWallRoutePoints, pointInPolygon, polygonArea, polygonEdgesCross, preferredDevicePort, projectDevicePositionOntoWall, proposeRouteClearanceSolution, reattachDeviceToWall, reattachRouteEndpointsToDevice, resolveRouteConflicts, routeDisplayDiameterMm, routePairClearanceMm, routePointsKeepDeviceClearance, stackFloorRoutes, wallAtPlanPoint, wallBackFaceRecessMm, wallCenterDepthForBackFaceRecess, wallLength, wallLocalToWorld, wallMountedPosition, wallServiceDepthMm, worldToWallLocal, verticalTransitionBounds } from './lib/geometry';
+import { addVerticalClearanceAtCrossings, confineRouteToAssociatedWalls, constrainRoutePointToWallLining, devicePortWorldPosition, distance3, findRouteIntersections, mountingRotation, orderWallBoundaryWithGaps, orthogonalizeWallRoutePoints, pointInPolygon, polygonArea, polygonEdgesCross, preferredDevicePort, projectDevicePositionOntoWall, proposeRouteClearanceSolution, reattachDeviceToWall, reattachRouteEndpointsToDevice, resolveRouteConflicts, routeDisplayDiameterMm, routePairClearanceMm, routePointsKeepDeviceClearance, routeSurfaceBounds, stackFloorRoutes, wallAtPlanPoint, wallBackFaceRecessMm, wallCenterDepthForBackFaceRecess, wallLength, wallLocalToWorld, wallMountedPosition, wallServiceDepthMm, worldToWallLocal, verticalTransitionBounds } from './lib/geometry';
 import { commitHistory, createDefaultProject, createHistory, normalizeConcealedRouteSurfaces, redoHistory, removeDevicesAndConnectedRoutes, serializeProject, startingFloorId, undoHistory, upgradeProject, type HistoryState } from './lib/project';
 import { ETHERNET_PAIR_COLORS, ITALIAN_CONDUCTOR_COLORS } from './lib/italianColors';
 import { useI18n } from './lib/i18n';
@@ -60,7 +61,7 @@ export default function App() {
   const [showAdjacentBlueprint, setShowAdjacentBlueprint] = useState(false);
   const [cancelToken, setCancelToken] = useState(0);
   const [viewCommand, setViewCommand] = useState<{ command: ViewCommand; nonce: number; focusPoint?: Vec3; radius?: number }>({ command: 'reset', nonce: 0 });
-  const [pendingTopView, setPendingTopView] = useState(false);
+  const [pendingProjectionView, setPendingProjectionView] = useState<'top' | 'iso'>();
   const [visibleServices, setVisibleServices] = useState<Set<ServiceCategory>>(new Set());
   const [saveState, setSaveState] = useState<SaveState>('saved');
   const [elevation, setElevation] = useState<{ open: boolean; batch: boolean }>({ open: false, batch: false });
@@ -94,13 +95,17 @@ export default function App() {
   const lightingRouteIds = useMemo(() => new Set(lightingAnalysis?.routeIds ?? []), [lightingAnalysis]);
   const selectedLightId = selection?.type === 'device' && lightingAnalysis?.lightIds.includes(selection.ids[0]) ? selection.ids[0] : undefined;
   const blinkingLightingSwitchIds = useMemo(() => new Set(selectedLightId && lightingAnalysis ? lightingAnalysis.controlsByLight[selectedLightId] ?? [] : []), [lightingAnalysis, selectedLightId]);
-  useEffect(() => { if (pendingTopView && projection === 'orthographic') { setViewCommand({ command: 'top', nonce: Date.now() }); setPendingTopView(false); } }, [pendingTopView, projection]);
+  useEffect(() => {
+    if (pendingProjectionView === 'top' && projection === 'orthographic' || pendingProjectionView === 'iso' && projection === 'perspective') {
+      setViewCommand({ command: pendingProjectionView, nonce: Date.now() }); setPendingProjectionView(undefined);
+    }
+  }, [pendingProjectionView, projection]);
   const selectedLocked = !!project && !!selection && selectionIsLocked(project, selection);
   const routeIntersections = useMemo(() => project ? findRouteIntersections(project.routes, project.preferences.routeOverlapPriorities, project.preferences.routeSeparationMm, project.preferences.routeDiameterMm) : [], [project?.routes, project?.preferences.routeOverlapPriorities, project?.preferences.routeSeparationMm, project?.preferences.routeDiameterMm]);
   const routeLayoutIssues = useMemo(() => project && settingsOpen ? findRouteLayoutIssues(project) : [], [project, settingsOpen]);
   const activeConflict = conflictReview?.items[conflictReview.index];
   const activeLayoutIssue = layoutReview?.items[layoutReview.index];
-  const proposedConflictRoute = useMemo(() => { if (!project || !activeConflict) return undefined; const route = project.routes.find((item) => item.id === activeConflict.routeBId); const other = project.routes.find((item) => item.id === activeConflict.routeAId); return route ? proposeRouteClearanceSolution(route, activeConflict.point, other ? routePairClearanceMm(route, other, project.preferences.routeSeparationMm, project.preferences.routeDiameterMm) : Math.max(project.preferences.routeSeparationMm[route.serviceCategory] ?? 30, routeDisplayDiameterMm(route, project.preferences.routeDiameterMm)), project.routes, project.walls) : undefined; }, [activeConflict, project]);
+  const proposedConflictRoute = useMemo(() => { if (!project || !activeConflict) return undefined; const route = project.routes.find((item) => item.id === activeConflict.routeBId); const other = project.routes.find((item) => item.id === activeConflict.routeAId); return route ? proposeRouteClearanceSolution(route, activeConflict.point, other ? routePairClearanceMm(route, other, project.preferences.routeSeparationMm, project.preferences.routeDiameterMm) : Math.max(project.preferences.routeSeparationMm[route.serviceCategory] ?? 30, routeDisplayDiameterMm(route, project.preferences.routeDiameterMm)), project.routes, project.walls, undefined, { bendRadiusMm: project.preferences.routeBendRadiusMm[route.serviceCategory] ?? 0, diameterMm: routeDisplayDiameterMm(route, project.preferences.routeDiameterMm), surfaceBounds: routeSurfaceBounds(project.floors, route.floorId), turnPenaltyMm: project.preferences.routeTurnPenaltyMm }) : undefined; }, [activeConflict, project]);
   const viewportProject = useMemo(() => {
     if (!project) return project;
     if (layoutReview?.solution && activeLayoutIssue) { const replacements = new Map(activeLayoutIssue.proposedRoutes.map((route) => [route.id, route])); return { ...project, routes: project.routes.map((route) => replacements.get(route.id) ?? route) }; }
@@ -162,6 +167,9 @@ export default function App() {
   }, [project]);
   const chooseTool = useCallback((next: ToolMode) => {
     setTool(next);
+    if (next === 'route') {
+      setSelection((current) => current?.type === 'device' ? current : null);
+    }
     if (next === 'structure') {
       const door = project?.deviceTypes.find((type) => type.id === 'door-opening');
       if (door) setPlacementType(door);
@@ -245,10 +253,9 @@ export default function App() {
   const createWall = (start: Vec2, end: Vec2) => {
     if (!project || start.x === end.x && start.z === end.z) return;
     const floor = project.floors.find((item) => item.id === activeFloorId)!;
-    const floorWalls = project.walls.filter((wall) => wall.floorId === floor.id && !wall.hidden); const snappedStart = nearestWallPoint(start, floorWalls, 260) ?? start; const snappedEnd = nearestWallPoint(end, floorWalls, 260) ?? end;
-    if (snappedStart.x === snappedEnd.x && snappedStart.z === snappedEnd.z) return;
+    if (start.x === end.x && start.z === end.z) return;
     const structuralThicknessMm = project.preferences.newWallStructuralThicknessMm; const liningLeftMm = project.preferences.newWallLiningLeftMm; const liningRightMm = project.preferences.newWallLiningRightMm;
-    const wall: Wall = { id: crypto.randomUUID(), floorId: floor.id, name: `Wall-${String(project.walls.length + 1).padStart(2, '0')}`, start: snappedStart, end: snappedEnd, heightMm: floor.ceilingHeightMm, thicknessMm: structuralThicknessMm + liningLeftMm + liningRightMm, structuralThicknessMm, liningLeftMm, liningRightMm, locked: false, hidden: false };
+    const wall: Wall = { id: crypto.randomUUID(), floorId: floor.id, name: `Wall-${String(project.walls.length + 1).padStart(2, '0')}`, start: { ...start }, end: { ...end }, heightMm: floor.ceilingHeightMm, thicknessMm: structuralThicknessMm + liningLeftMm + liningRightMm, structuralThicknessMm, liningLeftMm, liningRightMm, locked: false, hidden: false };
     commit((current) => ({ ...current, walls: [...current.walls, wall] })); setSelection({ type: 'wall', ids: [wall.id] }); setNotice(`${wall.name} created. Enter exact dimensions in Properties.`);
   };
   const createRoom = (boundary: Vec2[], wallIds: string[] = []) => {
@@ -338,17 +345,18 @@ export default function App() {
     if (destination && destinationPort) { const point = devicePortWorldPosition(destination, destinationPort); point.y += (project.floors.find((item) => item.id === destination!.floorId)?.elevationMm ?? activeElevation) - activeElevation; points[points.length - 1] = point; }
     const existingRoutes = project.routes.filter((route) => route.floorId === activeFloorId); const clearance = Math.max(project.preferences.routeSeparationMm[routeService] ?? 30, project.preferences.routeDiameterMm[routeService] ?? 20); const concealedPoints = points.map((point) => ({ ...point })); const floorDevices = project.devices.filter((device) => device.floorId === activeFloorId);
     if (wallIds.length) points = points.map((point) => {
-      const candidates = project.walls.filter((wall) => wallIds.includes(wall.id)).map((wall) => ({ wall, local: worldToWallLocal(wall, point) })).filter(({ wall, local }) => local.distanceAlongMm > 5 && local.distanceAlongMm < wallLength(wall) - 5 && local.heightMm >= 0 && local.heightMm <= wall.heightMm).sort((a, b) => Math.abs(a.local.depthMm) - Math.abs(b.local.depthMm));
+      const candidates = project.walls.filter((wall) => wallIds.includes(wall.id)).map((wall) => ({ wall, local: worldToWallLocal(wall, point) })).filter(({ wall, local }) => local.distanceAlongMm > 5 && local.distanceAlongMm < wallLength(wall) - 5 && local.heightMm >= 0 && local.heightMm <= wall.heightMm && Math.abs(local.depthMm) <= wall.thicknessMm / 2 + 5).sort((a, b) => Math.abs(a.local.depthMm) - Math.abs(b.local.depthMm));
       return candidates[0] ? constrainRoutePointToWallLining(candidates[0].wall, point) : point;
     });
     const endpointDeviceIds = [sourceDeviceId, destinationDeviceId].filter((id): id is string => !!id);
     if (!routePointsKeepDeviceClearance(points, floorDevices, endpointDeviceIds, 100)) points = concealedPoints;
+    const activeFloor = project.floors.find((item) => item.id === activeFloorId); let wallTop = activeFloor?.ceilingHeightMm ?? 2700;
     if (wallIds.length) {
-      const wallHeights = project.walls.filter((wall) => wallIds.includes(wall.id)).map((wall) => wall.heightMm); const wallTop = Math.min(...wallHeights); const wallMaximum = Math.max(100, wallTop - 100);
+      const wallHeights = project.walls.filter((wall) => wallIds.includes(wall.id)).map((wall) => wall.heightMm); wallTop = Math.min(...wallHeights); const wallMaximum = Math.max(100, wallTop - 100);
       points = points.map((point, index) => index === 0 || index === points.length - 1 || point.y < 0 || point.y >= wallTop ? point : { ...point, y: Math.max(0, Math.min(wallMaximum, point.y)) });
-      const crossingMaximum = Math.max(wallMaximum, ...points.map((point) => point.y >= wallTop ? point.y + clearance : point.y));
-      points = addVerticalClearanceAtCrossings(points, existingRoutes.filter((route) => route.wallIds.some((id) => wallIds.includes(id))), clearance, 0, crossingMaximum);
     }
+    const bounds = routeSurfaceBounds(project.floors, activeFloorId);
+    points = addVerticalClearanceAtCrossings(points, existingRoutes, clearance, bounds.floorMinimumY, bounds.ceilingMaximumY, { bendRadiusMm: project.preferences.routeBendRadiusMm[routeService] ?? 0, diameterMm: project.preferences.routeDiameterMm[routeService] ?? 20, wallTopMm: wallTop, surfaceBounds: bounds });
     const route: Route = {
       id: crypto.randomUUID(), kind, name: formatRouteName(project, routeService, kind, activeFloorId),
       serviceCategory: routeService, subtype: kind === 'cable' ? 'Custom cable' : kind === 'pipe' ? 'Custom pipe' : 'Custom duct', standard: '', manufacturer: '', productCode: '', floorId: activeFloorId,
@@ -363,7 +371,7 @@ export default function App() {
       conduit: kind === 'cable' ? { serviceType: routeService, displayColor: project.categories.find((category) => category.serviceCategory === routeService)?.color ?? '#6b747b', label: '', containsCableIds: [], material: '', installationType: 'concealed' } : undefined,
       notes: '', customProperties: [], pipe: kind === 'pipe' ? { material: '' } : undefined, duct: kind === 'duct' ? { material: '' } : undefined, locked: false, hidden: false
     };
-    const candidate = project.preferences.avoidRouteOverlaps ? resolveRouteConflicts(route, existingRoutes, project.preferences.routeOverlapPriorities, project.preferences.routeSeparationMm, project.preferences.routeDiameterMm, 10, project.walls) : { route, remainingConflicts: 0 };
+    const candidate = resolveRouteConflicts(route, project.preferences.avoidRouteOverlaps ? existingRoutes : [], project.preferences.routeOverlapPriorities, project.preferences.routeSeparationMm, project.preferences.routeDiameterMm, 10, project.walls, project.preferences.routeBendRadiusMm, routeSurfaceBounds(project.floors, activeFloorId), project.preferences.routeTurnPenaltyMm, floorDevices);
     const resolved = routePointsKeepDeviceClearance(candidate.route.points, floorDevices, endpointDeviceIds, 100) ? candidate : { route, remainingConflicts: candidate.remainingConflicts };
     const confinedRoute = confineRouteToAssociatedWalls({ ...resolved.route, points: orthogonalizeWallRoutePoints(resolved.route.points, project.walls.filter((wall) => wallIds.includes(wall.id))).map((point, order) => ({ ...point, id: 'id' in point && typeof point.id === 'string' ? point.id : crypto.randomUUID(), order })) }, project.walls);
     const finalRoute = normalizeConcealedRouteSurfaces({ ...project, routes: [confinedRoute] }, [confinedRoute])[0] ?? confinedRoute;
@@ -372,7 +380,7 @@ export default function App() {
       if (!current.preferences.avoidRouteOverlaps) return { ...current, routes: stacked };
       const inserted = stacked.find((item) => item.id === finalRoute.id); if (!inserted) return { ...current, routes: stacked };
       const others = stacked.filter((item) => item.id !== inserted.id && item.floorId === inserted.floorId);
-      const conflictResolved = resolveRouteConflicts(inserted, others, current.preferences.routeOverlapPriorities, current.preferences.routeSeparationMm, current.preferences.routeDiameterMm, 10, current.walls).route;
+      const conflictResolved = resolveRouteConflicts(inserted, others, current.preferences.routeOverlapPriorities, current.preferences.routeSeparationMm, current.preferences.routeDiameterMm, 10, current.walls, current.preferences.routeBendRadiusMm, routeSurfaceBounds(current.floors, inserted.floorId), current.preferences.routeTurnPenaltyMm, current.devices.filter((device) => device.floorId === inserted.floorId)).route;
       const confined = confineRouteToAssociatedWalls(conflictResolved, current.walls);
       const normalized = normalizeConcealedRouteSurfaces({ ...current, routes: [confined] }, [confined])[0] ?? confined;
       return { ...current, routes: stacked.map((item) => item.id === normalized.id ? normalized : item) };
@@ -487,6 +495,7 @@ export default function App() {
   };
   const changeRouteKind = (kind: typeof routeKind) => {
     setRouteKind(kind); setTool('route');
+    setSelection((current) => current?.type === 'device' ? current : null);
     if (kind === 'transition') { const transition = project?.deviceTypes.find((type) => type.id === 'floor-transition'); if (transition) setPlacementType(transition); return; }
     if (kind === 'junction') return;
     if (!ROUTE_SERVICE_COMPATIBILITY[kind].includes(routeService)) setRouteService(ROUTE_SERVICE_COMPATIBILITY[kind][0]);
@@ -584,7 +593,7 @@ export default function App() {
 
   return <div className="app-shell">
     <TopToolbar project={project} appIconUrl={appIconUrl} page={page} onPage={changePage} onOpenSettings={() => setSettingsOpen(true)} saveState={saveState} viewMode={toolbarViewMode} projection={projection} theme={themeMode} canUndo={history.past.length > 0} canRedo={history.future.length > 0}
-      onSave={() => void saveNow()} onUndo={undo} onRedo={redo} onViewMode={changeToolbarViewMode} onProjection={setProjection} onView={(command) => { if (command === 'top' && projection !== 'orthographic') { setPendingTopView(true); setProjection('orthographic'); return; } setPendingTopView(false); setViewCommand({ command, nonce: Date.now() }); }}
+      onSave={() => void saveNow()} onUndo={undo} onRedo={redo} onViewMode={changeToolbarViewMode} onToggle2D={() => { const enable = projection !== 'orthographic'; setPendingProjectionView(enable ? 'top' : 'iso'); setProjection(enable ? 'orthographic' : 'perspective'); }} onView={(command) => setViewCommand({ command, nonce: Date.now() })}
       onTheme={changeTheme} onOpenProjectManager={openManager} onExportBackup={exportBackup} onImportBackup={() => importInput.current?.click()}
       onOpenElevation={() => selectedWallId ? setElevation({ open: true, batch: false }) : setNotice('Select one wall before opening its wall scheme.')} onBatchExport={() => setElevation({ open: true, batch: true })} />
     {page === 'overview' ? <OverviewPage project={project} onAddRoomCategory={addRoomCategory} onEditRoomCategory={editRoomCategory} onDeleteRoomCategory={deleteRoomCategory} /> : page === 'light' && lightingAnalysis ? <div className="workspace-grid lighting-workspace"><LightingSidebar floors={project.floors} activeFloorId={activeFloorId} onActiveFloor={(id) => { setActiveFloorId(id); setSelection(null); }} onManageFloors={() => setLevelManagerOpen(true)} /><main className="viewport-column lighting-viewport" onContextMenu={(event) => event.preventDefault()}><HouseViewport project={project} activeFloorId={activeFloorId} selection={selection} tool="select" viewMode="xray" visibleServices={new Set(project.categories.map((category) => category.serviceCategory))} projection={projection} viewCommand={viewCommand} showAllFloors={false} showAdjacentBlueprint={false} cancelToken={cancelToken} sceneTheme={resolvedTheme} lightingMode visibleDeviceIds={lightingDeviceIds} visibleRouteIds={lightingRouteIds} blinkingDeviceIds={blinkingLightingSwitchIds} suppressRouteMotion routeKind="cable" routeService="lighting" measurementType="point-to-point" onSelect={(next) => { if (!next) { setSelection(null); return; } if (next.type === 'device' && lightingAnalysis.lightIds.includes(next.ids[0])) setSelection(next); }} onCreateWall={() => undefined} onCreateRoom={() => undefined} onCreateStaircase={() => undefined} onPlaceDevice={() => undefined} onCreateRoute={() => false} onCreateRouteJunction={() => undefined} onCreateMeasurement={() => undefined} onAddDevicePort={() => undefined} onReassignRoutePort={() => undefined} onStatus={setStatus} onNotice={setNotice} onNorth={() => setViewCommand({ command: 'front', nonce: Date.now() })} /></main><LightingPanel project={project} activeFloorId={activeFloorId} analysis={lightingAnalysis} selectedLightId={selectedLightId} onSelectLight={(id) => { setSelection({ type: 'device', ids: [id] }); setViewCommand({ command: 'fit-selection', nonce: Date.now() }); }} onLocateIssue={focusLightingItem} /></div> : page === 'photo' ? <div className="photo-workspace-grid"><PhotoSidebar floors={project.floors} activeFloorId={activeFloorId} showAllFloors={showAllFloors} placementActive={photoPlacementActive} visibleCategories={visiblePhotoCategories} counts={photoCounts} onActiveFloor={(id) => { setActiveFloorId(id); setShowAllFloors(false); }} onShowAllFloors={setShowAllFloors} onPlacementActive={setPhotoPlacementActive} onToggleCategory={(category) => setVisiblePhotoCategories((current) => { const next = new Set(current); next.has(category) ? next.delete(category) : next.add(category); return next; })} onSetAllCategories={(visible) => setVisiblePhotoCategories(visible ? new Set(PHOTO_CATEGORIES.map((item) => item.id)) : new Set())} onManageFloors={() => setLevelManagerOpen(true)} /><main className="viewport-column photo-viewport" onContextMenu={(event) => event.preventDefault()}><HouseViewport project={project} activeFloorId={activeFloorId} selection={null} tool="select" viewMode={photoXray ? 'xray' : 'normal'} visibleServices={new Set(project.categories.map((category) => category.serviceCategory))} projection={projection} viewCommand={viewCommand} showAllFloors={showAllFloors} showAdjacentBlueprint={false} cancelToken={cancelToken} sceneTheme={resolvedTheme} photoMode photoPlacementActive={photoPlacementActive} visiblePhotoCategories={visiblePhotoCategories} suppressRouteMotion suppressRoutes={!photoXray} routeKind="cable" routeService="electrical" measurementType="point-to-point" onSelect={() => undefined} onCreateWall={() => undefined} onCreateRoom={() => undefined} onCreateStaircase={() => undefined} onPlaceDevice={() => undefined} onCreateRoute={() => false} onCreateRouteJunction={() => undefined} onCreateMeasurement={() => undefined} onAddDevicePort={() => undefined} onReassignRoutePort={() => undefined} onStatus={setStatus} onNotice={setNotice} onNorth={() => setViewCommand({ command: 'front', nonce: Date.now() })} onPlacePhotoMarker={preparePhotoMarker} onOpenPhotoMarker={setOpenPhotoMarkerId} /></main></div> : <div className="workspace-grid"><LeftSidebar project={project} activeFloorId={activeFloorId} tool={tool} selection={selection} placementType={placementType} routeKind={routeKind} routeService={routeService} measurementType={measurementType} visibleServices={visibleServices}
@@ -615,6 +624,7 @@ export default function App() {
     {openPhotoMarkerId && project.photoMarkers.find((marker) => marker.id === openPhotoMarkerId) && <PhotoMarkerDialog projectId={project.id} marker={project.photoMarkers.find((marker) => marker.id === openPhotoMarkerId)!} onUpdate={(patch) => updatePhotoMarker(openPhotoMarkerId, patch)} onAddPhotos={(photos) => addMarkerPhotos(openPhotoMarkerId, photos)} onRemovePhoto={(photo) => void removeMarkerPhoto(openPhotoMarkerId, photo)} onDeleteMarker={() => void deletePhotoMarker(openPhotoMarkerId)} onClose={() => setOpenPhotoMarkerId(undefined)} onNotice={setNotice} />}
     {pendingPhotoPosition && <PhotoPointCreateDialog position={pendingPhotoPosition} initialCategory={photoCategory} suggestedName={`${t('Photo point')} ${project.photoMarkers.length + 1}`} onCreate={(values) => createPhotoMarker(pendingPhotoPosition, values)} onClose={() => setPendingPhotoPosition(undefined)} />}
     {projectManager && <ProjectManager appIconUrl={appIconUrl} projects={projectList} activeId={project.id} onClose={() => setProjectManager(false)} onOpen={async (id) => { const loaded = upgradeProject(await api.getProject(id)); setHistory(createHistory(loaded)); setActiveFloorId(startingFloorId(loaded)); setSelection(null); setProjectManager(false); }} onNew={async () => { const title = window.prompt('New project name', 'New house project')?.trim(); if (!title) return; const created = await api.saveProject(createDefaultProject(title)); setHistory(createHistory(created)); setActiveFloorId(startingFloorId(created)); setSelection(null); setProjectManager(false); }} onDuplicate={async (id) => { await api.duplicateProject(id); await refreshProjects(); }} onDelete={async (id) => { if (id === project.id) return setNotice('Open another project before deleting the current one.'); if (confirm('Delete this local project and its dedicated workspace folder? This cannot be undone.')) { await api.deleteProject(id); await refreshProjects(); } }} />}
+    <ProjectTutorial projectId={project.id} />
     <input ref={importInput} type="file" accept="application/json,.json" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void importBackup(file); event.target.value = ''; }} />
   </div>;
 }

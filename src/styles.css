@@ -52,6 +52,8 @@ h3 { margin-bottom: 10px; font-size: 12px; }
 .toolbar-actions > button { min-width: 30px; padding-inline: 7px; background: transparent; border-color: transparent; }
 .toolbar-actions > button.xray-toggle.active { color: #071711; background: #58e5a8; border-color: #79efbb; box-shadow: 0 0 0 1px rgba(88,229,168,.18); }
 .toolbar-actions > button.xray-toggle.active:hover { color: #071711; background: #70edb7; border-color: #8cf3c6; }
+.toolbar-actions > button.view-2d-toggle.active { color: #071711; background: #58e5a8; border-color: #79efbb; box-shadow: 0 0 0 1px rgba(88,229,168,.18); }
+.toolbar-actions > button.view-2d-toggle.active:hover { color: #071711; background: #70edb7; border-color: #8cf3c6; }
 .xray-toggle kbd { margin-left: 1px; color: currentColor; border-color: color-mix(in srgb, currentColor 35%, transparent); background: transparent; }
 .separator { width: 1px; height: 22px; margin: 0 3px; background: var(--line); }
 .toolbar-select { display: flex; align-items: center; gap: 4px; height: 31px; padding: 0 5px 0 7px; border: 1px solid transparent; border-radius: 5px; }
@@ -246,6 +248,13 @@ h3 { margin-bottom: 10px; font-size: 12px; }
 .muted { color: var(--muted); }
 .scene-label { display: inline-block; white-space: nowrap; padding: 3px 6px; border: 1px solid #58666d; background: rgba(12,16,18,.88); color: white; border-radius: 4px; font: 700 10px Manrope,sans-serif; pointer-events: none; }
 :root[data-theme='light'] .scene-label { border-color: #aab5b0; background: rgba(255,255,255,.92); color: #172126; }
+.opening-plan-overlay { pointer-events: none; }
+.opening-plan-label { display: inline-block; min-height: 0; white-space: nowrap; padding: 3px 6px; border: 1px solid currentColor; border-radius: 4px; background: rgba(12,16,18,.91); color: #f0a24c; font: 700 10px Manrope,sans-serif; line-height: 1.25; box-shadow: 0 1px 5px rgba(0,0,0,.25); }
+button.opening-plan-label { pointer-events: auto; cursor: pointer; }
+button.opening-plan-label:hover:not(:disabled), button.opening-plan-label:focus-visible { color: #071711; background: #58e5a8; border-color: #79efbb; }
+.opening-plan-label.window { color: #55b9e8; }
+:root[data-theme='light'] .opening-plan-label { background: rgba(255,255,255,.94); color: #a8580b; box-shadow: 0 1px 4px rgba(31,49,57,.16); }
+:root[data-theme='light'] .opening-plan-label.window { color: #086895; }
 .service-label { border-left: 3px solid var(--accent); }
 .room-chip { min-height: 23px; padding: 2px 7px; color: #071711; background: #45d99a; border-color: #45d99a; font-size: 9px; }
 .measurement-label { display: inline-block; white-space: nowrap; padding: 3px 7px; border: 1px solid #d7e0e4; border-radius: 4px; background: rgba(9,13,15,.9); color: #fff; font: 700 10px Manrope,sans-serif; box-shadow: 0 2px 8px rgba(0,0,0,.3); pointer-events: none; }
@@ -264,11 +273,30 @@ h3 { margin-bottom: 10px; font-size: 12px; }
 :root[data-theme='light'] .view-snapshot-button:hover:not(:disabled) { background: #fff; }
 .route-bundle-chip { display: inline-block; padding: 2px 5px; border: 1px solid #91a1a8; border-radius: 4px; background: rgba(12,16,18,.88); color: #fff; font: 700 9px Manrope,sans-serif; pointer-events: none; }
 .wall-length-entry { display: inline-block; padding: 4px 7px; border: 1px solid #45d99a; border-radius: 4px; background: rgba(9,19,15,.92); color: #8ff0c4; font: 700 10px Manrope,sans-serif; white-space: nowrap; pointer-events: none; }
+.wall-snap-label { display: inline-block; padding: 2px 5px; border: 1px solid currentColor; border-radius: 3px; background: rgba(10,16,19,.9); color: #f7bd55; font: 700 8px Manrope,sans-serif; letter-spacing: .08em; white-space: nowrap; pointer-events: none; }
+:root[data-theme='light'] .wall-snap-label { background: rgba(255,255,255,.94); color: #9a5b00; }
+.viewport-creation-tool, .viewport-creation-tool canvas { cursor: none; }
+.drafting-overlay, .drafting-overlay * { pointer-events: none !important; cursor: none !important; }
 .status-bar { display: flex; align-items: center; gap: 15px; padding: 0 10px; overflow: hidden; border-top: 1px solid var(--line); background: var(--surface); color: var(--muted); font-size: 9px; white-space: nowrap; }
 .status-bar strong { color: var(--text); text-transform: uppercase; }
 .status-notice { margin-left: auto; overflow: hidden; text-overflow: ellipsis; }
 kbd { padding: 1px 4px; border: 1px solid var(--line); background: var(--surface-2); border-radius: 3px; color: var(--muted); font: 9px Manrope,sans-serif; }
 .modal-backdrop { position: fixed; inset: 0; z-index: 2147483647; display: grid; place-items: center; padding: 22px; background: rgba(4,7,9,.72); backdrop-filter: blur(5px); }
+.project-tutorial { position: fixed; inset: 0; z-index: 2147483646; pointer-events: none; }
+.tutorial-shield { position: absolute; inset: 0; pointer-events: auto; }
+.tutorial-spotlight { position: fixed; z-index: 1; border: 2px solid var(--accent); border-radius: 9px; box-shadow: 0 0 0 9999px rgba(3,8,10,.72), 0 0 0 4px color-mix(in srgb,var(--accent) 22%,transparent); pointer-events: none; }
+.tutorial-popover { position: fixed; z-index: 2; display: flex; flex-direction: column; gap: 10px; padding: 14px; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--surface); box-shadow: 0 18px 52px rgba(0,0,0,.42); pointer-events: auto; }
+.tutorial-popover:focus { outline: none; }
+.tutorial-popover > header, .tutorial-popover > footer { display: flex; align-items: center; justify-content: space-between; gap: 9px; }
+.tutorial-popover > header { color: var(--muted); font-size: 9px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; }
+.tutorial-popover > header button { min-height: 25px; padding: 2px 6px; border-color: transparent; background: transparent; color: var(--muted); font-size: 9px; }
+.tutorial-popover > strong { font-size: 15px; line-height: 1.25; }
+.tutorial-popover > p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.55; }
+.tutorial-popover > footer { padding-top: 4px; }
+.tutorial-progress { display: flex; align-items: center; justify-content: center; gap: 4px; }
+.tutorial-progress i { width: 5px; height: 5px; border-radius: 50%; background: var(--line-strong); }
+.tutorial-progress i.active { width: 13px; border-radius: 4px; background: var(--accent); }
+:root[data-theme='light'] .tutorial-spotlight { box-shadow: 0 0 0 9999px rgba(24,34,39,.58), 0 0 0 4px color-mix(in srgb,var(--accent) 24%,transparent); }
 .elevation-dialog, .project-dialog, .settings-dialog { display: flex; flex-direction: column; width: min(1200px, 95vw); height: min(820px, 92vh); overflow: hidden; border: 1px solid var(--line-strong); background: var(--surface); border-radius: 10px; box-shadow: var(--shadow); }
 .snapshot-dialog { display: flex; flex-direction: column; width: min(1100px, 94vw); height: min(780px, 90vh); overflow: hidden; border: 1px solid var(--line-strong); background: var(--surface); border-radius: 10px; box-shadow: var(--shadow); }
 .elevation-dialog > header, .project-dialog > header, .settings-dialog > header { display: flex; justify-content: space-between; align-items: center; min-height: 52px; padding: 8px 14px; border-bottom: 1px solid var(--line); }
@@ -440,7 +468,7 @@ kbd { padding: 1px 4px; border: 1px solid var(--line); background: var(--surface
 /* Level and blueprint management */
 .compact-level-settings { grid-template-columns: 1fr 1fr; }
 .level-manager-dialog, .furniture-dialog, .transition-dialog { display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--surface); box-shadow: var(--shadow); }
-.level-manager-dialog { width: min(1060px,94vw); height: min(760px,90vh); }
+.level-manager-dialog { width: min(1220px,96vw); height: min(900px,96vh); }
 .level-manager-dialog > header, .level-manager-dialog > footer, .furniture-dialog > header, .furniture-dialog > footer, .transition-dialog > header, .transition-dialog > footer { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border-bottom: 1px solid var(--line); }
 .level-manager-dialog > header div, .furniture-dialog > header div, .transition-dialog > header div { display: flex; flex-direction: column; gap: 2px; }
 .level-manager-dialog > header span, .furniture-dialog > header span, .transition-dialog > header span { color: var(--muted); font-size: 9px; }
@@ -448,8 +476,12 @@ kbd { padding: 1px 4px; border: 1px solid var(--line); background: var(--surface
 .level-manager-dialog > footer, .furniture-dialog > footer, .transition-dialog > footer { justify-content: flex-end; gap: 6px; border-top: 1px solid var(--line); border-bottom: 0; }
 .level-manager-body { min-height: 0; flex: 1; display: grid; grid-template-columns: 270px 1fr; }
 .level-manager-body > aside { min-width: 0; padding: 14px 10px; border-right: 1px solid var(--line); background: var(--surface-2); }
-.level-manager-body > main { min-width: 0; overflow-y: auto; padding: 15px; }
+.level-manager-body > main { min-width: 0; overflow: hidden; padding: 12px 15px; }
 .level-manager-body main > section { margin-bottom: 14px; padding: 14px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-2); }
+.level-definition-section { padding-block: 11px !important; }
+.level-definition-section h2 { margin-bottom: 7px; }
+.level-definition-grid { display: grid; grid-template-columns: minmax(220px,1.4fr) repeat(2,minmax(150px,1fr)); gap: 8px; }
+.level-definition-grid .field { margin: 0; }
 .level-list { display: flex; flex-direction: column; gap: 4px; margin-top: 10px; }
 .level-list > button { width: 100%; justify-content: space-between; padding: 8px; background: var(--surface); text-align: left; }
 .level-list > button.active { color: var(--text); border-color: var(--accent); background: var(--accent-deep); }
@@ -483,6 +515,11 @@ kbd { padding: 1px 4px; border: 1px solid var(--line); background: var(--surface
 .blueprint-origin > i::after { left: -1px; top: -14px; width: 2px; height: 28px; }
 .blueprint-origin > em { position: absolute; left: 9px; top: 8px; padding: 2px 4px; color: #fff; border-radius: 3px; background: rgba(135,15,34,.9); font-size: 8px; font-style: normal; white-space: nowrap; }
 .blueprint-empty { width: 100%; min-height: 180px; flex-direction: column; color: var(--muted); border-style: dashed; }
+.blueprint-summary-card { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 10px 0; padding: 11px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); }
+.blueprint-summary-card > span { display: flex; align-items: center; min-width: 0; gap: 9px; }
+.blueprint-summary-card > span > span { display: flex; min-width: 0; flex-direction: column; }
+.blueprint-summary-card strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.blueprint-summary-card small { color: var(--muted); font-size: 8px; }
 .blueprint-toolbar { display: grid; grid-template-columns: minmax(180px,1fr) auto; align-items: end; gap: 8px; margin-bottom: 8px; }
 .blueprint-toolbar > .field { margin: 0; }
 .blueprint-toolbar button.active { color: #071711; }
@@ -493,6 +530,23 @@ kbd { padding: 1px 4px; border: 1px solid var(--line); background: var(--surface
 .blueprint-alignment { display: grid; grid-template-columns: minmax(220px,1fr) 180px auto; align-items: end; gap: 8px; margin: 8px 0; padding: 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
 .blueprint-alignment > div { display: flex; flex-direction: column; gap: 2px; }
 .blueprint-alignment small { color: var(--muted); font-size: 8px; }
+.blueprint-transform-grid { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 8px; }
+.blueprint-transform-grid .field { min-width: 0; margin: 0; }
+.blueprint-calibration-dialog { display: flex; width: min(1400px,96vw); height: min(900px,94vh); min-height: 0; flex-direction: column; overflow: hidden; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--surface); box-shadow: var(--shadow); }
+.blueprint-calibration-dialog > header, .blueprint-calibration-dialog > footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+.blueprint-calibration-dialog > header > div { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
+.blueprint-calibration-dialog > header span { overflow: hidden; color: var(--muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.blueprint-calibration-dialog > header > button { border-color: transparent; background: transparent; font-size: 18px; }
+.blueprint-calibration-dialog > .blueprint-preview-controls { flex: 0 0 auto; margin: 0; padding: 9px 14px; border-bottom: 1px solid var(--line); background: var(--surface-2); }
+.blueprint-calibration-dialog .blueprint-mode-buttons button { gap: 6px; }
+.blueprint-calibration-workspace { min-width: 0; min-height: 0; flex: 1; padding: 12px; background: var(--bg); }
+.blueprint-calibration-workspace .blueprint-preview-scroll { height: 100%; margin: 0; }
+.blueprint-calibration-workspace .blueprint-calibration { min-width: 0; min-height: 0; }
+.blueprint-calibration-dialog > footer { flex: 0 0 auto; border-top: 1px solid var(--line); border-bottom: 0; }
+.blueprint-calibration-dialog > footer .blueprint-status-row { flex: 1; margin: 0; }
+@media (max-height: 650px) {
+  .level-manager-body > main { overflow-y: auto; }
+}
 
 /* Structured settings */
 .settings-dialog-structured { width: min(1540px,95vw); height: min(980px,94vh); max-height: 94vh; }

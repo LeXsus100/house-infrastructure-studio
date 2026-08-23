@@ -1,4 +1,4 @@
-import type { AssociationType, Device, DevicePort, Dimensions3, MountingFace, Route, RouteKind, ServiceCategory, Vec2, Vec3, Wall } from '../../shared/types';
+import type { AssociationType, Device, DevicePort, Dimensions3, Floor, MountingFace, Route, RouteKind, ServiceCategory, Vec2, Vec3, Wall } from '../../shared/types';
 
 export const MM_PER_M = 1000;
 export const roundMm = (value: number) => Math.round(value);
@@ -6,6 +6,28 @@ export const mmToM = (value: number) => value / MM_PER_M;
 export const mToMm = (value: number) => roundMm(value * MM_PER_M);
 export const mmToCm = (value: number) => value / 10;
 export const cmToMm = (value: number) => roundMm(value * 10);
+
+export interface RouteSurfaceBounds {
+  floorMinimumY: number;
+  floorMaximumY: number;
+  ceilingMinimumY: number;
+  ceilingMaximumY: number;
+}
+
+/** Local vertical limits of the concealed floor and ceiling cavities for one level. */
+export function routeSurfaceBounds(floors: Floor[], floorId: string): RouteSurfaceBounds {
+  const current = floors.find((floor) => floor.id === floorId);
+  if (!current) return { floorMinimumY: -500, floorMaximumY: 0, ceilingMinimumY: 2700, ceilingMaximumY: 3200 };
+  const lower = floors.filter((floor) => floor.elevationMm < current.elevationMm).sort((a, b) => b.elevationMm - a.elevationMm)[0];
+  const upper = floors.filter((floor) => floor.elevationMm > current.elevationMm).sort((a, b) => a.elevationMm - b.elevationMm)[0];
+  const floorMinimumY = lower ? Math.min(0, lower.elevationMm + lower.ceilingHeightMm - current.elevationMm) : -500;
+  const ceilingMaximumY = upper ? Math.max(current.ceilingHeightMm, upper.elevationMm - current.elevationMm) : current.ceilingHeightMm + 500;
+  return { floorMinimumY, floorMaximumY: 0, ceilingMinimumY: current.ceilingHeightMm, ceilingMaximumY };
+}
+
+export function isAutomaticRoutePoint(point: Vec3): point is Vec3 & { automatic: 'crossing-clearance' } {
+  return (point as Vec3 & { automatic?: string }).automatic === 'crossing-clearance';
+}
 export const ceilingRouteHeight = (ceilingHeightMm: number, offsetMm: number) => roundMm(ceilingHeightMm - offsetMm);
 
 export function floorRouteHeight(offsetMm: number, kind: RouteKind, order: RouteKind[], spacingMm: number): number {
@@ -182,6 +204,80 @@ export function nearestWallPoint(point: Vec2, walls: Wall[], toleranceMm = 180):
   return nearest ? { ...nearest } : undefined;
 }
 
+export type WallDrawingSnapKind = 'free' | 'grid' | 'wall' | 'corner' | 'cardinal' | 'perpendicular';
+export interface WallDrawingSnapResult {
+  point: Vec2;
+  kind: WallDrawingSnapKind;
+  wallId?: string;
+  /** Unit plan direction for the temporary drafting guide. */
+  guideDirection?: Vec2;
+}
+
+interface WallProjection { wall: Wall; point: Vec2; distance: number; ratio: number }
+
+function nearestWallProjection(point: Vec2, walls: Wall[], toleranceMm: number): WallProjection | undefined {
+  return walls.flatMap((wall): WallProjection[] => {
+    const dx = wall.end.x - wall.start.x; const dz = wall.end.z - wall.start.z; const lengthSquared = dx * dx + dz * dz;
+    if (!lengthSquared) return [];
+    const ratio = Math.max(0, Math.min(1, ((point.x - wall.start.x) * dx + (point.z - wall.start.z) * dz) / lengthSquared));
+    const projected = { x: roundMm(wall.start.x + dx * ratio), z: roundMm(wall.start.z + dz * ratio) }; const distance = distance2(point, projected);
+    return distance <= toleranceMm ? [{ wall, point: projected, distance, ratio }] : [];
+  }).sort((first, second) => first.distance - second.distance)[0];
+}
+
+function rayWallIntersection(start: Vec2, direction: Vec2, wall: Wall): Vec2 | undefined {
+  const sx = wall.end.x - wall.start.x; const sz = wall.end.z - wall.start.z; const denominator = direction.x * sz - direction.z * sx;
+  if (Math.abs(denominator) < .000001) return undefined;
+  const qx = wall.start.x - start.x; const qz = wall.start.z - start.z;
+  const rayRatio = (qx * sz - qz * sx) / denominator; const wallRatio = (qx * direction.z - qz * direction.x) / denominator;
+  if (rayRatio < 0 || wallRatio < -.001 || wallRatio > 1.001) return undefined;
+  return { x: roundMm(start.x + direction.x * rayRatio), z: roundMm(start.z + direction.z * rayRatio) };
+}
+
+/**
+ * Applies the wall tool's complete snap priority in one place. Corners win,
+ * then an angular guide may intersect a target wall, followed by wall, angle,
+ * and grid snapping. Shift bypasses this function at the call site.
+ */
+export function wallDrawingSnap(raw: Vec2, start: Vec2 | undefined, walls: Wall[], gridMm: number, snapToGridEnabled: boolean, snapToWallsEnabled: boolean, wallToleranceMm = 260, cornerToleranceMm = 180): WallDrawingSnapResult {
+  if (snapToWallsEnabled) {
+    const corner = walls.flatMap((wall) => [{ wall, point: wall.start }, { wall, point: wall.end }])
+      .map((candidate) => ({ ...candidate, distance: distance2(raw, candidate.point) }))
+      .filter((candidate) => candidate.distance <= cornerToleranceMm)
+      .sort((first, second) => first.distance - second.distance)[0];
+    if (corner) return { point: { ...corner.point }, kind: 'corner', wallId: corner.wall.id };
+  }
+  const targetWall = snapToWallsEnabled ? nearestWallProjection(raw, walls, wallToleranceMm) : undefined;
+  if (!start) {
+    if (targetWall) return { point: targetWall.point, kind: 'wall', wallId: targetWall.wall.id };
+    return snapToGridEnabled ? { point: snapPoint(raw, gridMm), kind: 'grid' } : { point: { ...raw }, kind: 'free' };
+  }
+  const delta = { x: raw.x - start.x, z: raw.z - start.z }; const rawLength = Math.hypot(delta.x, delta.z);
+  const attachedWalls = snapToWallsEnabled ? walls.filter((wall) => {
+    const projection = nearestWallProjection(start, [wall], 8); return !!projection;
+  }) : [];
+  const guides: Array<{ direction: Vec2; kind: 'cardinal' | 'perpendicular'; score: number }> = [];
+  const addGuide = (direction: Vec2, kind: 'cardinal' | 'perpendicular') => {
+    const projection = delta.x * direction.x + delta.z * direction.z; const sign = projection < 0 ? -1 : 1; const directed = { x: direction.x * sign, z: direction.z * sign };
+    const perpendicularDistance = Math.abs(delta.x * directed.z - delta.z * directed.x); const angularAllowance = Math.min(wallToleranceMm, Math.max(80, rawLength * Math.tan(7.5 * Math.PI / 180)));
+    if (rawLength > 1 && perpendicularDistance <= angularAllowance) guides.push({ direction: directed, kind, score: perpendicularDistance + (kind === 'perpendicular' ? -1 : 0) });
+  };
+  addGuide({ x: 1, z: 0 }, 'cardinal'); addGuide({ x: 0, z: 1 }, 'cardinal');
+  attachedWalls.forEach((wall) => { const length = Math.max(1, wallLength(wall)); addGuide({ x: -(wall.end.z - wall.start.z) / length, z: (wall.end.x - wall.start.x) / length }, 'perpendicular'); });
+  const guide = guides.sort((first, second) => first.score - second.score)[0];
+  if (guide && targetWall) {
+    const intersection = rayWallIntersection(start, guide.direction, targetWall.wall);
+    if (intersection && distance2(raw, intersection) <= wallToleranceMm) return { point: intersection, kind: guide.kind, wallId: targetWall.wall.id, guideDirection: guide.direction };
+  }
+  if (targetWall) return { point: targetWall.point, kind: 'wall', wallId: targetWall.wall.id };
+  if (guide) {
+    let distanceAlong = Math.max(0, delta.x * guide.direction.x + delta.z * guide.direction.z);
+    if (snapToGridEnabled) distanceAlong = snapValue(distanceAlong, gridMm);
+    return { point: { x: roundMm(start.x + guide.direction.x * distanceAlong), z: roundMm(start.z + guide.direction.z * distanceAlong) }, kind: guide.kind, guideDirection: guide.direction };
+  }
+  return snapToGridEnabled ? { point: snapPoint(raw, gridMm), kind: 'grid' } : { point: { ...raw }, kind: 'free' };
+}
+
 /**
  * Creates non-overlapping rendered butt joints while preserving independent wall records.
  * At a corner one stable wall owns the joint; branches stop at the finished face.
@@ -203,6 +299,75 @@ export function wallRenderEndExtensions(wall: Wall, walls: Wall[], toleranceMm =
     return candidates.some((value) => value < 0) ? Math.min(...candidates) : Math.max(0, ...candidates);
   };
   return { startMm: extensionAt(wall.start), endMm: extensionAt(wall.end) };
+}
+
+export interface WallRenderEndProfile { negativeDepthMm: number; positiveDepthMm: number; kind: 'square' | 'miter' }
+export interface WallRenderEndProfiles { start: WallRenderEndProfile; end: WallRenderEndProfile }
+
+/**
+ * Returns a shared miter plane for a simple endpoint-to-endpoint corner. The
+ * profile is linear through the wall depth, so core and both drywall layers
+ * meet on the same seam without changing either wall record.
+ */
+export function wallRenderEndProfiles(wall: Wall, walls: Wall[], toleranceMm = 8): WallRenderEndProfiles {
+  const squareExtensions = wallRenderEndExtensions(wall, walls, toleranceMm);
+  const length = Math.max(1, wallLength(wall)); const tangent = { x: (wall.end.x - wall.start.x) / length, z: (wall.end.z - wall.start.z) / length }; const normal = { x: -tangent.z, z: tangent.x };
+  const profileAt = (endpoint: Vec2, endpointKind: 'start' | 'end'): WallRenderEndProfile => {
+    const allConnected = walls.flatMap((other) => {
+      if (other.id === wall.id || other.floorId !== wall.floorId) return [];
+      const atStart = distance2(endpoint, other.start) <= toleranceMm; const atEnd = distance2(endpoint, other.end) <= toleranceMm;
+      if (!atStart && !atEnd) return [];
+      const otherLength = Math.max(1, wallLength(other)); const otherTangent = { x: (other.end.x - other.start.x) / otherLength, z: (other.end.z - other.start.z) / otherLength };
+      const cross = Math.abs(tangent.x * otherTangent.z - tangent.z * otherTangent.x);
+      const interior = atStart ? otherTangent : { x: -otherTangent.x, z: -otherTangent.z };
+      return [{ wall: other, atStart, tangent: otherTangent, interior, cross }];
+    });
+    const fallback = endpointKind === 'start' ? -squareExtensions.startMm : squareExtensions.endMm;
+    const collinear = allConnected.filter((item) => item.cross < .15);
+    const connected = allConnected.filter((item) => item.cross >= .15);
+    if (collinear.length && connected.length) {
+      // A straight wall run split into separate editable records must remain
+      // square through a T-junction. Mitring both halves against the branch
+      // cuts matching triangular holes out of the continuous run.
+      return { negativeDepthMm: 0, positiveDepthMm: 0, kind: 'square' };
+    }
+    if (!collinear.length && connected.length >= 2) {
+      const throughPair = connected.flatMap((first, firstIndex) => connected.slice(firstIndex + 1).map((second) => [first, second] as const)).find(([first, second]) => {
+        const cross = Math.abs(first.interior.x * second.interior.z - first.interior.z * second.interior.x);
+        const dot = first.interior.x * second.interior.x + first.interior.z * second.interior.z;
+        return cross < .15 && dot < -.85;
+      });
+      if (throughPair) {
+        // This wall is the branch of an endpoint T-junction. Each depth edge
+        // stops at the matching outside face of the straight-through wall, so
+        // a change in trunk thickness is filled without overlap or a void.
+        const signedReach = (side: -1 | 1) => {
+          const matching = throughPair.filter((item) => (item.interior.x * normal.x + item.interior.z * normal.z) * side > .1);
+          const source = matching.length ? matching : [...throughPair];
+          const reach = Math.max(...source.map((item) => item.wall.thicknessMm / 2 / Math.max(item.cross, .001)));
+          return roundMm((endpointKind === 'start' ? 1 : -1) * reach);
+        };
+        return { negativeDepthMm: signedReach(-1), positiveDepthMm: signedReach(1), kind: 'miter' };
+      }
+    }
+    if (connected.length !== 1) return { negativeDepthMm: fallback, positiveDepthMm: fallback, kind: 'square' };
+    const other = connected[0]; const currentInterior = endpointKind === 'start' ? tangent : { x: -tangent.x, z: -tangent.z };
+    const otherInterior = other.atStart ? other.tangent : { x: -other.tangent.x, z: -other.tangent.z };
+    // The miter is the separator between the two rays that continue inward
+    // from the shared endpoint. Using their bisector makes the result
+    // independent of which endpoint/drawing direction each wall uses.
+    const seam = { x: currentInterior.x + otherInterior.x, z: currentInterior.z + otherInterior.z };
+    const seamMagnitude = Math.hypot(seam.x, seam.z); if (seamMagnitude < .000001) return { negativeDepthMm: fallback, positiveDepthMm: fallback, kind: 'square' };
+    seam.x /= seamMagnitude; seam.z /= seamMagnitude;
+    const depthProjection = seam.x * normal.x + seam.z * normal.z;
+    if (Math.abs(depthProjection) < .000001 || wall.thicknessMm <= 0) return { negativeDepthMm: fallback, positiveDepthMm: fallback, kind: 'square' };
+    const alongPerDepth = (seam.x * tangent.x + seam.z * tangent.z) / depthProjection;
+    const halfCurrent = wall.thicknessMm / 2; const negative = roundMm(-halfCurrent * alongPerDepth); const positive = roundMm(halfCurrent * alongPerDepth);
+    const limit = Math.max(wall.thicknessMm, other.wall.thicknessMm) * 4;
+    if (![negative, positive].every(Number.isFinite) || Math.max(Math.abs(negative), Math.abs(positive)) > limit) return { negativeDepthMm: fallback, positiveDepthMm: fallback, kind: 'square' };
+    return { negativeDepthMm: negative, positiveDepthMm: positive, kind: 'miter' };
+  };
+  return { start: profileAt(wall.start, 'start'), end: profileAt(wall.end, 'end') };
 }
 
 export interface WallRenderIntersectionCut { startMm: number; endMm: number; heightMm: number; otherWallId: string }
@@ -265,6 +430,59 @@ export function worldToWallLocal(wall: Wall, position: Vec3): { distanceAlongMm:
   };
 }
 
+export interface OpeningPlanGeometry {
+  outline: Vec2[];
+  dimensionStart: Vec2;
+  dimensionEnd: Vec2;
+  startTick: [Vec2, Vec2];
+  endTick: [Vec2, Vec2];
+  labelPoint: Vec2;
+}
+
+/**
+ * Produces a stable top-plan symbol for a wall opening. The geometry follows
+ * the wall centreline instead of the device rotation, so doors and windows
+ * remain legible even when the wall-mounted model is hidden by the lintel.
+ */
+export function openingPlanGeometry(
+  wall: Wall,
+  opening: Pick<Device, 'position' | 'distanceAlongWallMm' | 'dimensions' | 'wallSide'>,
+  dimensionOffsetMm = 180
+): OpeningPlanGeometry {
+  const length = Math.max(wallLength(wall), 1);
+  const halfWidth = Math.min(Math.max(1, opening.dimensions.width / 2), length / 2);
+  const local = worldToWallLocal(wall, opening.position);
+  const along = Math.max(halfWidth, Math.min(length - halfWidth, opening.distanceAlongWallMm ?? local.distanceAlongMm));
+  const center = wallLocalToWorld(wall, along, 0, 0);
+  const tx = (wall.end.x - wall.start.x) / length; const tz = (wall.end.z - wall.start.z) / length;
+  const nx = -tz; const nz = tx; const halfDepth = wall.thicknessMm / 2;
+  const side = opening.wallSide === 'right' ? -1 : 1;
+  const point = (wallDistanceMm: number, wallDepthMm: number): Vec2 => ({
+    x: roundMm(center.x + tx * wallDistanceMm + nx * wallDepthMm),
+    z: roundMm(center.z + tz * wallDistanceMm + nz * wallDepthMm)
+  });
+  const dimensionDepth = side * (halfDepth + dimensionOffsetMm);
+  const tickHalfLength = 55;
+  return {
+    outline: [point(-halfWidth, -halfDepth), point(halfWidth, -halfDepth), point(halfWidth, halfDepth), point(-halfWidth, halfDepth), point(-halfWidth, -halfDepth)],
+    dimensionStart: point(-halfWidth, dimensionDepth),
+    dimensionEnd: point(halfWidth, dimensionDepth),
+    startTick: [point(-halfWidth, dimensionDepth - tickHalfLength), point(-halfWidth, dimensionDepth + tickHalfLength)],
+    endTick: [point(halfWidth, dimensionDepth - tickHalfLength), point(halfWidth, dimensionDepth + tickHalfLength)],
+    labelPoint: point(0, dimensionDepth + side * 95)
+  };
+}
+
+/**
+ * Converts a hit on any rendered face of a wall to the stable plan point used
+ * by the wall drawing tool. Different wall layers and hit faces must resolve
+ * to the same centreline or the drafting cursor can jump between candidates.
+ */
+export function projectWallDrawingHitToCenterline(wall: Wall, position: Vec3): Vec3 {
+  const local = worldToWallLocal(wall, position);
+  return wallLocalToWorld(wall, Math.max(0, Math.min(wallLength(wall), local.distanceAlongMm)), 0, 0);
+}
+
 /** Recomputes the wall-local attachment when a wall-mounted object's world coordinates are edited. */
 export function projectDevicePositionOntoWall(wall: Wall, requestedPosition: Vec3, centerInWall = false): Pick<Device, 'position' | 'heightFromFloorMm' | 'distanceAlongWallMm' | 'depthInsideWallMm'> {
   const local = worldToWallLocal(wall, requestedPosition);
@@ -314,6 +532,79 @@ export function devicePortWorldPosition(device: Device, port: DevicePort): Vec3 
     y: roundMm(device.position.y + rotated.y),
     z: roundMm(device.position.z + rotated.z)
   };
+}
+
+function rotateDeviceLocalVector(device: Device, vector: Vec3): Vec3 {
+  const xAngle = device.rotationDeg.x * Math.PI / 180; const yAngle = device.rotationDeg.y * Math.PI / 180; const zAngle = device.rotationDeg.z * Math.PI / 180;
+  const cx = Math.cos(xAngle); const sx = Math.sin(xAngle); const cy = Math.cos(yAngle); const sy = Math.sin(yAngle); const cz = Math.cos(zAngle); const sz = Math.sin(zAngle);
+  const afterZ = { x: vector.x * cz - vector.y * sz, y: vector.x * sz + vector.y * cz, z: vector.z };
+  const afterY = { x: afterZ.x * cy + afterZ.z * sy, y: afterZ.y, z: -afterZ.x * sy + afterZ.z * cy };
+  return { x: afterY.x, y: afterY.y * cx - afterY.z * sx, z: afterY.y * sx + afterY.z * cx };
+}
+
+function deviceLocalPoint(device: Device, world: Vec3): Vec3 {
+  const xAngle = device.rotationDeg.x * Math.PI / 180; const yAngle = device.rotationDeg.y * Math.PI / 180; const zAngle = device.rotationDeg.z * Math.PI / 180;
+  const cx = Math.cos(xAngle); const sx = Math.sin(xAngle); const cy = Math.cos(yAngle); const sy = Math.sin(yAngle); const cz = Math.cos(zAngle); const sz = Math.sin(zAngle);
+  const delta = { x: world.x - device.position.x, y: world.y - device.position.y, z: world.z - device.position.z };
+  const afterX = { x: delta.x, y: delta.y * cx + delta.z * sx, z: -delta.y * sx + delta.z * cx };
+  const afterY = { x: afterX.x * cy - afterX.z * sy, y: afterX.y, z: afterX.x * sy + afterX.z * cy };
+  return { x: afterY.x * cz + afterY.y * sz, y: -afterY.x * sz + afterY.y * cz, z: afterY.z };
+}
+
+function deviceWorldPoint(device: Device, local: Vec3): Vec3 {
+  const rotated = rotateDeviceLocalVector(device, local);
+  return { x: roundMm(device.position.x + rotated.x), y: roundMm(device.position.y + rotated.y), z: roundMm(device.position.z + rotated.z) };
+}
+
+function localSegmentCrossesBoxInterior(start: Vec3, end: Vec3, half: Vec3): boolean {
+  let minimum = 0; let maximum = 1;
+  for (const axis of ['x', 'y', 'z'] as const) {
+    const limit = Math.max(0, half[axis] - .5); const delta = end[axis] - start[axis];
+    if (Math.abs(delta) < 1e-8) { if (Math.abs(start[axis]) < limit) continue; return false; }
+    const first = (-limit - start[axis]) / delta; const second = (limit - start[axis]) / delta;
+    minimum = Math.max(minimum, Math.min(first, second)); maximum = Math.min(maximum, Math.max(first, second));
+    if (minimum > maximum) return false;
+  }
+  return maximum - minimum > 1e-6 && maximum > 1e-6 && minimum < 1 - 1e-6;
+}
+
+/** True when a route segment enters the solid device body, rather than merely touching a port face. */
+export function routeSegmentCrossesDeviceBody(start: Vec3, end: Vec3, device: Device): boolean {
+  return localSegmentCrossesBoxInterior(deviceLocalPoint(device, start), deviceLocalPoint(device, end), { x: device.dimensions.width / 2, y: device.dimensions.height / 2, z: device.dimensions.depth / 2 });
+}
+
+/**
+ * Finds the shortest collision-free lead from a concealed point to an exposed
+ * device port. Junction boxes and panels deliberately allow internal wiring.
+ */
+export function deviceSafeTerminalLead(device: Device, port: DevicePort, concealedPoint: Vec3, clearanceMm = 10): Vec3[] {
+  const portWorld = devicePortWorldPosition(device, port);
+  if (['junction-box', 'electrical-panel'].includes(device.typeId) || !routeSegmentCrossesDeviceBody(concealedPoint, portWorld, device)) return [concealedPoint, portWorld];
+  const half = { x: device.dimensions.width / 2, y: device.dimensions.height / 2, z: device.dimensions.depth / 2 };
+  const margin = Math.max(2, clearanceMm); const shell = { x: half.x + margin, y: half.y + margin, z: half.z + margin };
+  const faceNormals: Record<MountingFace, Vec3> = { front: { x: 0, y: 0, z: 1 }, back: { x: 0, y: 0, z: -1 }, left: { x: -1, y: 0, z: 0 }, right: { x: 1, y: 0, z: 0 }, top: { x: 0, y: 1, z: 0 }, bottom: { x: 0, y: -1, z: 0 } };
+  const normal = faceNormals[port.face]; const portOutside = { ...port.position };
+  if (normal.x) portOutside.x = normal.x * shell.x;
+  if (normal.y) portOutside.y = normal.y * shell.y;
+  if (normal.z) portOutside.z = normal.z * shell.z;
+  const start = deviceLocalPoint(device, concealedPoint);
+  const values = (extent: number) => [-extent, 0, extent];
+  const shellNodes = values(shell.x).flatMap((x) => values(shell.y).flatMap((y) => values(shell.z).map((z) => ({ x, y, z })))).filter((point) => Math.abs(point.x) === shell.x || Math.abs(point.y) === shell.y || Math.abs(point.z) === shell.z);
+  const nodes = [start, portOutside, ...shellNodes, port.position].filter((point, index, items) => items.findIndex((candidate) => distance3(candidate, point) < .5) === index);
+  const target = nodes.findIndex((point) => distance3(point, port.position) < .5); const distances = nodes.map(() => Number.POSITIVE_INFINITY); const previous = nodes.map(() => -1); const visited = new Set<number>(); distances[0] = 0;
+  while (visited.size < nodes.length) {
+    let current = -1; let currentDistance = Number.POSITIVE_INFINITY;
+    distances.forEach((distance, index) => { if (!visited.has(index) && distance < currentDistance) { current = index; currentDistance = distance; } });
+    if (current < 0 || current === target) break; visited.add(current);
+    nodes.forEach((candidate, index) => {
+      if (index === current || visited.has(index) || localSegmentCrossesBoxInterior(nodes[current], candidate, half)) return;
+      const nextDistance = currentDistance + distance3(nodes[current], candidate);
+      if (nextDistance < distances[index]) { distances[index] = nextDistance; previous[index] = current; }
+    });
+  }
+  if (!Number.isFinite(distances[target])) return [concealedPoint, portWorld];
+  const path: Vec3[] = []; for (let cursor = target; cursor >= 0; cursor = previous[cursor]) { path.unshift(deviceWorldPoint(device, nodes[cursor])); if (cursor === 0) break; }
+  return path;
 }
 
 /** Keeps connected route endpoints on their exact device ports after the device moves or rotates. */
@@ -429,9 +720,36 @@ export function simplifyRoutePoints(points: Vec3[]): Vec3[] {
   return result;
 }
 
+/**
+ * Restores the marker lost by databases created before migration 12. Legacy
+ * clearance hills are dense, one-sided vertical excursions that return to the
+ * same route plane; ordinary authored controls are intentionally left alone.
+ */
+export function restoreLegacyAutomaticClearancePoints<T extends Vec3>(points: T[]): T[] {
+  if (points.length < 9) return points.map((point) => ({ ...point }));
+  const restored = points.map((point) => ({ ...point }));
+  let segment = 0;
+  while (segment < restored.length - 1) {
+    if (isAutomaticRoutePoint(restored[segment]) || isAutomaticRoutePoint(restored[segment + 1]) || distance3(restored[segment], restored[segment + 1]) > 130) { segment++; continue; }
+    const start = segment;
+    while (segment < restored.length - 1 && !isAutomaticRoutePoint(restored[segment]) && !isAutomaticRoutePoint(restored[segment + 1]) && distance3(restored[segment], restored[segment + 1]) <= 130) segment++;
+    const end = segment;
+    if (start === 0 || end === restored.length - 1 || end - start + 1 < 7) continue;
+    const first = restored[start]; const last = restored[end];
+    if (Math.abs(first.y - last.y) > 5) continue;
+    const baseline = (first.y + last.y) / 2; const deviations = restored.slice(start + 1, end).map((point) => point.y - baseline);
+    const maximum = Math.max(...deviations); const minimum = Math.min(...deviations);
+    const oneSidedHill = maximum >= 10 && minimum >= -2 || minimum <= -10 && maximum <= 2;
+    if (!oneSidedHill) continue;
+    for (let index = start; index <= end; index++) restored[index] = { ...restored[index], automatic: 'crossing-clearance' };
+  }
+  return restored;
+}
+
 /** Counts meaningful 3D direction changes in a route, ignoring duplicate controls. */
 export function routeTurnCount(route: Pick<Route, 'points'>): number {
-  const points = simplifyRoutePoints(route.points);
+  const authoredPoints = route.points.filter((point) => !isAutomaticRoutePoint(point));
+  const points = simplifyRoutePoints(authoredPoints.length >= 2 ? authoredPoints : route.points);
   if (points.length < 3) return 0;
   return points.slice(1, -1).reduce((turns, point, index) => {
     const previous = points[index]; const next = points[index + 2];
@@ -442,6 +760,129 @@ export function routeTurnCount(route: Pick<Route, 'points'>): number {
     const dot = (incoming.x * outgoing.x + incoming.y * outgoing.y + incoming.z * outgoing.z) / (incomingLength * outgoingLength);
     return dot < .9999 ? turns + 1 : turns;
   }, 0);
+}
+
+/** Millimetres by which consecutive authored turns violate the preferred spacing. */
+export function routeCloseTurnSpacingPenalty(route: Pick<Route, 'points'>, minimumSpacingMm: number): number {
+  if (minimumSpacingMm <= 0) return 0;
+  const points = simplifyRoutePoints(route.points.filter((point) => !isAutomaticRoutePoint(point)));
+  const turns = points.slice(1, -1).filter((point, index) => {
+    const previous = points[index]; const next = points[index + 2];
+    const incoming = { x: point.x - previous.x, y: point.y - previous.y, z: point.z - previous.z }; const outgoing = { x: next.x - point.x, y: next.y - point.y, z: next.z - point.z };
+    const incomingLength = Math.hypot(incoming.x, incoming.y, incoming.z); const outgoingLength = Math.hypot(outgoing.x, outgoing.y, outgoing.z);
+    if (incomingLength <= 1 || outgoingLength <= 1) return false;
+    return (incoming.x * outgoing.x + incoming.y * outgoing.y + incoming.z * outgoing.z) / (incomingLength * outgoingLength) < .9999;
+  });
+  return turns.slice(1).reduce((penalty, point, index) => penalty + Math.max(0, minimumSpacingMm - distance3(turns[index], point)), 0);
+}
+
+function routePointOnHorizontalServicePlane(point: Vec3, bounds: RouteSurfaceBounds, toleranceMm = 2) {
+  return point.y >= bounds.floorMinimumY - toleranceMm && point.y <= bounds.floorMaximumY + toleranceMm
+    || point.y >= bounds.ceilingMinimumY - toleranceMm && point.y <= bounds.ceilingMaximumY + toleranceMm;
+}
+
+/**
+ * Amount of tangent length missing from horizontal floor/ceiling turns. A
+ * route with zero deficit can render every such turn at the project radius
+ * without silently shrinking the bend to fit a cluster of nearby controls.
+ */
+export function routePlanarBendRadiusDeficit(route: Pick<Route, 'points'>, bendRadiusMm: number, bounds: RouteSurfaceBounds): number {
+  if (bendRadiusMm <= 0 || route.points.length < 3) return 0;
+  return route.points.slice(1, -1).reduce((deficit, corner, index) => {
+    const previous = route.points[index]; const next = route.points[index + 2];
+    if (isAutomaticRoutePoint(previous) || isAutomaticRoutePoint(corner) || isAutomaticRoutePoint(next) || !routePointOnHorizontalServicePlane(corner, bounds)) return deficit;
+    const incoming = { x: corner.x - previous.x, y: corner.y - previous.y, z: corner.z - previous.z }; const outgoing = { x: next.x - corner.x, y: next.y - corner.y, z: next.z - corner.z };
+    const incomingLength = Math.hypot(incoming.x, incoming.y, incoming.z); const outgoingLength = Math.hypot(outgoing.x, outgoing.y, outgoing.z);
+    if (incomingLength <= 2 || outgoingLength <= 2) return deficit;
+    const dot = (incoming.x * outgoing.x + incoming.y * outgoing.y + incoming.z * outgoing.z) / (incomingLength * outgoingLength);
+    const deflection = Math.acos(Math.max(-1, Math.min(1, dot)));
+    if (deflection < Math.PI / 36 || deflection > Math.PI * 35 / 36) return deficit;
+    const tangent = bendRadiusMm * Math.tan(deflection / 2);
+    // roundedRoutePoints reserves at most 45% of either adjacent segment so
+    // neighbouring bends can never overlap. Enforce that same render budget
+    // during planning instead of allowing the renderer to shrink the radius.
+    const requiredSegmentLength = tangent / .45;
+    return deficit + Math.max(0, requiredSegmentLength - incomingLength) + Math.max(0, requiredSegmentLength - outgoingLength);
+  }, 0);
+}
+
+/**
+ * Compresses dense automatically planned doglegs on floor/ceiling planes.
+ * It considers direct, one-turn, and full-lane alternatives, but only accepts
+ * candidates that preserve route clearance and the 10 cm device envelope.
+ */
+export function optimizeRouteControlPoints(
+  route: Route,
+  existingRoutes: Route[],
+  priorities: Partial<Record<ServiceCategory, number>>,
+  separations: Partial<Record<ServiceCategory, number>>,
+  diameters: Partial<Record<ServiceCategory, number>>,
+  bendRadiusMm: number,
+  bounds: RouteSurfaceBounds,
+  devices: Device[] = [],
+  turnPenaltyMm = 500
+): Route {
+  if (route.points.length < 4) return route;
+  const minimumTurnSpacing = Math.max(250, bendRadiusMm * 2); const endpointDeviceIds = [route.sourceDeviceId, route.destinationDeviceId].filter((id): id is string => !!id);
+  const obstacles = existingRoutes.filter((candidate) => candidate.id !== route.id && candidate.floorId === route.floorId);
+  const conflicts = (candidate: Route) => obstacles.flatMap((obstacle) => findRouteIntersections([candidate, obstacle], priorities, separations, diameters)).length;
+  const score = (candidate: Route) => [
+    conflicts(candidate),
+    Math.round(routePlanarBendRadiusDeficit(candidate, bendRadiusMm, bounds)),
+    routeTurnCount(candidate) * Math.max(1, turnPenaltyMm),
+    Math.round(routeCloseTurnSpacingPenalty(candidate, minimumTurnSpacing)),
+    routeLength(candidate, bendRadiusMm)
+  ] as const;
+  const isBetter = (candidate: Route, current: Route) => {
+    const next = score(candidate); const previous = score(current);
+    for (let index = 0; index < next.length; index++) if (next[index] !== previous[index]) return next[index] < previous[index];
+    return false;
+  };
+  const routeWithReplacement = (current: Route, start: number, end: number, replacement: Vec3[]) => {
+    const points = simplifyRoutePoints([...current.points.slice(0, start), ...replacement, ...current.points.slice(end + 1)]).map((point, order) => {
+      const stored = point as Partial<Route['points'][number]>;
+      return { ...point, id: stored.id ?? crypto.randomUUID(), order };
+    });
+    return { ...current, points };
+  };
+  let optimized = route; let start = 0;
+  while (start < optimized.points.length - 2) {
+    const first = optimized.points[start];
+    if (isAutomaticRoutePoint(first) || !routePointOnHorizontalServicePlane(first, bounds)) { start++; continue; }
+    let end = start;
+    while (end + 1 < optimized.points.length && !isAutomaticRoutePoint(optimized.points[end + 1]) && routePointOnHorizontalServicePlane(optimized.points[end + 1], bounds) && Math.abs(optimized.points[end + 1].y - first.y) <= 2) end++;
+    if (end - start < 2) { start = Math.max(start + 1, end); continue; }
+    const run = optimized.points.slice(start, end + 1); const localRoute = { points: run };
+    const needsCompression = routeTurnCount(localRoute) > 0 && (routeCloseTurnSpacingPenalty(localRoute, minimumTurnSpacing) > 0 || routePlanarBendRadiusDeficit(localRoute, bendRadiusMm, bounds) > 0);
+    if (!needsCompression) { start = end; continue; }
+    const last = run.at(-1)!; const point = (x: number, z: number): Vec3 => ({ x, y: first.y, z });
+    const paths: Vec3[][] = [
+      [first, last],
+      [first, point(last.x, first.z), last],
+      [first, point(first.x, last.z), last]
+    ];
+    [...new Set(run.map((item) => item.x))].forEach((lane) => paths.push(
+      [first, point(lane, first.z), last],
+      [first, point(lane, last.z), last],
+      [first, point(lane, first.z), point(lane, last.z), last]
+    ));
+    [...new Set(run.map((item) => item.z))].forEach((lane) => paths.push(
+      [first, point(first.x, lane), last],
+      [first, point(last.x, lane), last],
+      [first, point(first.x, lane), point(last.x, lane), last]
+    ));
+    const signatures = new Set<string>(); let selected = optimized;
+    paths.forEach((path) => {
+      const simplified = simplifyRoutePoints(path); const signature = simplified.map((item) => `${item.x},${item.y},${item.z}`).join('|');
+      if (signatures.has(signature)) return; signatures.add(signature);
+      const candidate = routeWithReplacement(optimized, start, end, simplified);
+      if (!routePointsKeepDeviceClearance(candidate.points, devices, endpointDeviceIds, 100)) return;
+      if (isBetter(candidate, selected)) selected = candidate;
+    });
+    if (selected !== optimized) { optimized = selected; start = Math.max(0, start - 1); }
+    else start = end;
+  }
+  return optimized;
 }
 
 function wallContainsRoutePoint(wall: Wall, point: Vec3, toleranceMm = 12) {
@@ -455,6 +896,9 @@ export function orthogonalizeWallRoutePoints(points: Vec3[], walls: Wall[]): Vec
   const result: Vec3[] = [{ ...points[0] }];
   points.slice(1).forEach((end) => {
     const start = result[result.length - 1];
+    // Crossing clearances are sampled curves, not authored wall turns. Keep
+    // their short sloped segments intact instead of squaring every sample.
+    if (isAutomaticRoutePoint(start) || isAutomaticRoutePoint(end)) { result.push({ ...end }); return; }
     const wall = walls.find((candidate) => wallContainsRoutePoint(candidate, start) && wallContainsRoutePoint(candidate, end));
     if (wall) {
       const localStart = worldToWallLocal(wall, start); const localEnd = worldToWallLocal(wall, end);
@@ -479,6 +923,11 @@ export function roundedRoutePoints(points: Vec3[], bendRadiusMm: number, walls: 
   const push = (point: Vec3) => { const rounded = { x: roundMm(point.x), y: roundMm(point.y), z: roundMm(point.z) }; if (distance3(result[result.length - 1], rounded) > 1) result.push(rounded); };
   for (let index = 1; index < points.length - 1; index++) {
     const previous = points[index - 1]; const corner = points[index]; const next = points[index + 1];
+    // Automatic overpass samples already describe their own smooth curve, but
+    // an authored corner immediately before or after that curve still needs
+    // the project's full service bend radius. Skipping because a neighbour was
+    // automatic left otherwise valid ceiling turns visibly square.
+    if (isAutomaticRoutePoint(corner)) { push(corner); continue; }
     const incoming = { x: corner.x - previous.x, y: corner.y - previous.y, z: corner.z - previous.z }; const outgoing = { x: next.x - corner.x, y: next.y - corner.y, z: next.z - corner.z };
     const incomingLength = Math.hypot(incoming.x, incoming.y, incoming.z); const outgoingLength = Math.hypot(outgoing.x, outgoing.y, outgoing.z);
     if (incomingLength <= 2 || outgoingLength <= 2) { push(corner); continue; }
@@ -494,11 +943,29 @@ export function roundedRoutePoints(points: Vec3[], bendRadiusMm: number, walls: 
     if (tangent <= 2) { push(corner); continue; }
     const entry = { x: corner.x - first.x * tangent, y: corner.y - first.y * tangent, z: corner.z - first.z * tangent };
     const exit = { x: corner.x + second.x * tangent, y: corner.y + second.y * tangent, z: corner.z + second.z * tangent };
+    const effectiveRadius = tangent / tangentFactor;
+    const centerDirection = { x: second.x - first.x, y: second.y - first.y, z: second.z - first.z };
+    const centerDirectionLength = Math.hypot(centerDirection.x, centerDirection.y, centerDirection.z);
+    const centerDistance = effectiveRadius / Math.max(.0001, Math.sin(deflection / 2));
+    const center = { x: corner.x + centerDirection.x / centerDirectionLength * centerDistance, y: corner.y + centerDirection.y / centerDirectionLength * centerDistance, z: corner.z + centerDirection.z / centerDirectionLength * centerDistance };
+    const entryRadius = { x: entry.x - center.x, y: entry.y - center.y, z: entry.z - center.z };
+    const exitRadius = { x: exit.x - center.x, y: exit.y - center.y, z: exit.z - center.z };
+    const axis = { x: entryRadius.y * exitRadius.z - entryRadius.z * exitRadius.y, y: entryRadius.z * exitRadius.x - entryRadius.x * exitRadius.z, z: entryRadius.x * exitRadius.y - entryRadius.y * exitRadius.x };
+    const axisLength = Math.hypot(axis.x, axis.y, axis.z);
+    if (centerDirectionLength <= .001 || axisLength <= .001) { push(corner); continue; }
+    const unitAxis = { x: axis.x / axisLength, y: axis.y / axisLength, z: axis.z / axisLength };
+    const radiusDot = (entryRadius.x * exitRadius.x + entryRadius.y * exitRadius.y + entryRadius.z * exitRadius.z) / (effectiveRadius * effectiveRadius);
+    const arcAngle = Math.acos(Math.max(-1, Math.min(1, radiusDot)));
     push(entry);
-    const steps = Math.max(3, Math.ceil(deflection / (Math.PI / 12)));
+    const steps = Math.max(5, Math.ceil(arcAngle / (Math.PI / 24)));
     for (let step = 1; step <= steps; step++) {
-      const t = step / steps; const inverse = 1 - t;
-      push({ x: inverse * inverse * entry.x + 2 * inverse * t * corner.x + t * t * exit.x, y: inverse * inverse * entry.y + 2 * inverse * t * corner.y + t * t * exit.y, z: inverse * inverse * entry.z + 2 * inverse * t * corner.z + t * t * exit.z });
+      const angle = arcAngle * step / steps; const cosine = Math.cos(angle); const sine = Math.sin(angle); const axisDot = unitAxis.x * entryRadius.x + unitAxis.y * entryRadius.y + unitAxis.z * entryRadius.z;
+      const rotated = {
+        x: entryRadius.x * cosine + (unitAxis.y * entryRadius.z - unitAxis.z * entryRadius.y) * sine + unitAxis.x * axisDot * (1 - cosine),
+        y: entryRadius.y * cosine + (unitAxis.z * entryRadius.x - unitAxis.x * entryRadius.z) * sine + unitAxis.y * axisDot * (1 - cosine),
+        z: entryRadius.z * cosine + (unitAxis.x * entryRadius.y - unitAxis.y * entryRadius.x) * sine + unitAxis.z * axisDot * (1 - cosine)
+      };
+      push({ x: center.x + rotated.x, y: center.y + rotated.y, z: center.z + rotated.z });
     }
   }
   push(points.at(-1)!);
@@ -603,8 +1070,72 @@ function planSegmentIntersection(firstStart: Vec3, firstEnd: Vec3, secondStart: 
   return { firstRatio, secondRatio, point: { x: roundMm(firstStart.x + r.x * firstRatio), z: roundMm(firstStart.z + r.z * firstRatio) } };
 }
 
-/** Adds a brief vertical dogleg only where a same-elevation route actually crosses another route. */
-export function addVerticalClearanceAtCrossings(points: Vec3[], existingRoutes: Route[], clearanceMm: number, minimumY: number, maximumY: number): Vec3[] {
+function smoothClearanceBridgeVector(start: Vec3, end: Vec3, shift: Vec3, samples = 12): Vec3[] {
+  const steps = Math.max(8, samples);
+  return Array.from({ length: steps + 1 }, (_, step) => {
+    const t = step / steps;
+    // A raised cosine has a horizontal tangent at the route plane and crest,
+    // producing one continuous hill instead of four square elbows.
+    const rise = .5 - .5 * Math.cos(Math.PI * 2 * t);
+    return {
+      x: roundMm(start.x + (end.x - start.x) * t + shift.x * rise),
+      y: roundMm(start.y + (end.y - start.y) * t + shift.y * rise),
+      z: roundMm(start.z + (end.z - start.z) * t + shift.z * rise),
+      automatic: 'crossing-clearance' as const
+    };
+  });
+}
+
+function smoothClearanceBridge(start: Vec3, end: Vec3, liftMm: number, samples = 12): Vec3[] {
+  return smoothClearanceBridgeVector(start, end, { x: 0, y: liftMm, z: 0 }, samples);
+}
+
+function smoothClearanceCluster(start: Vec3, end: Vec3, firstRatio: number, lastRatio: number, liftMm: number, halfSpanRatio: number): Vec3[] {
+  const beforeRatio = Math.max(0, firstRatio - halfSpanRatio); const afterRatio = Math.min(1, lastRatio + halfSpanRatio);
+  const length = distance3(start, end); const result: Vec3[] = [];
+  const append = (ratio: number, heightOffset: number) => {
+    const point = { x: roundMm(start.x + (end.x - start.x) * ratio), y: roundMm(start.y + (end.y - start.y) * ratio + heightOffset), z: roundMm(start.z + (end.z - start.z) * ratio), automatic: 'crossing-clearance' as const };
+    if (!result.length || distance3(result[result.length - 1], point) > 1) result.push(point);
+  };
+  const riseSteps = Math.max(6, Math.ceil((firstRatio - beforeRatio) * length / 35));
+  for (let step = 0; step <= riseSteps; step++) { const t = step / riseSteps; append(beforeRatio + (firstRatio - beforeRatio) * t, liftMm * (.5 - .5 * Math.cos(Math.PI * t))); }
+  if (lastRatio - firstRatio > .0001) append(lastRatio, liftMm);
+  const fallSteps = Math.max(6, Math.ceil((afterRatio - lastRatio) * length / 35));
+  for (let step = 1; step <= fallSteps; step++) { const t = step / fallSteps; append(lastRatio + (afterRatio - lastRatio) * t, liftMm * (.5 + .5 * Math.cos(Math.PI * t))); }
+  return result;
+}
+
+function raisedCosineHalfSpanMm(liftMm: number, bendRadiusMm: number): number {
+  if (bendRadiusMm <= 0 || Math.abs(liftMm) <= 0) return 0;
+  // For h/2(1-cos(pi*x/a)), peak curvature is h*pi^2/(2*a^2).
+  // Solving a minimum radius R gives the required run-up a below.
+  return Math.PI * Math.sqrt(Math.abs(liftMm) * bendRadiusMm / 2);
+}
+
+interface CrossingClearanceOptions {
+  bendRadiusMm?: number;
+  diameterMm?: number;
+  wallTopMm?: number;
+  surfaceBounds?: RouteSurfaceBounds;
+  turnPenaltyMm?: number;
+}
+
+function verticalEnvelopeAt(y: number, minimumY: number, maximumY: number, options: CrossingClearanceOptions) {
+  const radius = Math.max(0, options.diameterMm ?? 0) / 2;
+  const wallTop = options.wallTopMm ?? options.surfaceBounds?.ceilingMinimumY ?? maximumY;
+  if (y < 0) {
+    const bounds = options.surfaceBounds ?? { floorMinimumY: minimumY, floorMaximumY: Math.min(0, maximumY), ceilingMinimumY: wallTop, ceilingMaximumY: maximumY };
+    return { minimum: bounds.floorMinimumY + radius, maximum: bounds.floorMaximumY - radius, directions: [1, -1] as const };
+  }
+  if (y >= wallTop) {
+    const bounds = options.surfaceBounds ?? { floorMinimumY: minimumY, floorMaximumY: 0, ceilingMinimumY: wallTop, ceilingMaximumY: maximumY };
+    return { minimum: bounds.ceilingMinimumY + radius, maximum: bounds.ceilingMaximumY - radius, directions: [1, -1] as const };
+  }
+  return { minimum: Math.max(minimumY, radius), maximum: Math.min(maximumY, wallTop - radius), directions: [1, -1] as const };
+}
+
+/** Adds a smooth vertical overpass only where a same-elevation route crosses another route. */
+export function addVerticalClearanceAtCrossings(points: Vec3[], existingRoutes: Route[], clearanceMm: number, minimumY: number, maximumY: number, options: CrossingClearanceOptions = {}): Vec3[] {
   if (points.length < 2 || clearanceMm <= 0) return points;
   const result: Vec3[] = [{ ...points[0] }];
   points.slice(1).forEach((end, index) => {
@@ -614,16 +1145,30 @@ export function addVerticalClearanceAtCrossings(points: Vec3[], existingRoutes: 
       const otherStart = route.points[otherIndex]; if (Math.abs(otherStart.y - otherEnd.y) > 2) return undefined;
       const intersection = planSegmentIntersection(start, end, otherStart, otherEnd); if (!intersection) return undefined;
       const otherY = otherStart.y + (otherEnd.y - otherStart.y) * intersection.secondRatio; const ownY = start.y;
-      return Math.abs(ownY - otherY) < clearanceMm ? intersection : undefined;
-    }).filter((item): item is NonNullable<typeof item> => !!item)).sort((a, b) => a.firstRatio - b.firstRatio);
+      return Math.abs(ownY - otherY) < clearanceMm ? { ...intersection, otherY } : undefined;
+    }).filter((item): item is NonNullable<typeof item> => !!item)).sort((a, b) => a.firstRatio - b.firstRatio)
+      .filter((item, crossingIndex, items) => !crossingIndex || Math.abs(item.firstRatio - items[crossingIndex - 1].firstRatio) * length > 5);
     if (!crossings.length) { result.push({ ...end }); return; }
-    const ownY = start.y; const liftedY = ownY + clearanceMm <= maximumY ? ownY + clearanceMm : Math.max(minimumY, ownY - clearanceMm); const approachRatio = Math.min(.12, 120 / length);
-    crossings.forEach(({ firstRatio, point }) => {
-      const beforeRatio = Math.max(0, firstRatio - approachRatio); const afterRatio = Math.min(1, firstRatio + approachRatio);
-      const before = { x: roundMm(start.x + (end.x - start.x) * beforeRatio), y: ownY, z: roundMm(start.z + (end.z - start.z) * beforeRatio) };
-      const after = { x: roundMm(start.x + (end.x - start.x) * afterRatio), y: ownY, z: roundMm(start.z + (end.z - start.z) * afterRatio) };
-      [before, { ...before, y: liftedY }, { x: point.x, y: liftedY, z: point.z }, { ...after, y: liftedY }, after].forEach((pointToAdd) => { if (distance3(result[result.length - 1], pointToAdd) > 1) result.push(pointToAdd); });
-    });
+    const ownY = start.y; const requestedLift = Math.max(clearanceMm + 10, clearanceMm * 1.35);
+    const envelope = verticalEnvelopeAt(ownY, minimumY, maximumY, options);
+    const averageOtherY = crossings.reduce((sum, crossing) => sum + crossing.otherY, 0) / crossings.length;
+    const preferredDirection = ownY >= averageOtherY ? 1 : -1;
+    const liftDirection = [...envelope.directions].sort((first) => first === preferredDirection ? -1 : 1)
+      .find((direction) => direction > 0 ? ownY + requestedLift <= envelope.maximum : ownY - requestedLift >= envelope.minimum);
+    // A partial bump would still collide or leave its host surface. Keep the
+    // conflict explicit so the broader planner can choose another valid path.
+    if (!liftDirection || envelope.minimum > envelope.maximum) { result.push({ ...end }); return; }
+    const lift = requestedLift * liftDirection;
+    const halfSpanMm = Math.max(140, clearanceMm * 3, raisedCosineHalfSpanMm(lift, options.bendRadiusMm ?? 0));
+    const halfSpanRatio = halfSpanMm / length;
+    const groups = crossings.reduce<Array<{ firstRatio: number; lastRatio: number }>>((items, crossing) => {
+      const previous = items.at(-1);
+      if (previous && (crossing.firstRatio - previous.lastRatio) * length <= halfSpanMm * 2) previous.lastRatio = crossing.firstRatio;
+      else items.push({ firstRatio: crossing.firstRatio, lastRatio: crossing.firstRatio });
+      return items;
+    }, []);
+    groups.filter((group) => group.firstRatio * length >= halfSpanMm && (1 - group.lastRatio) * length >= halfSpanMm)
+      .forEach((group) => smoothClearanceCluster(start, end, group.firstRatio, group.lastRatio, lift, halfSpanRatio).forEach((pointToAdd) => { if (distance3(result[result.length - 1], pointToAdd) > 1) result.push(pointToAdd); }));
     if (distance3(result[result.length - 1], end) > 1) result.push({ ...end });
   });
   return result;
@@ -678,7 +1223,7 @@ function closestSegmentApproach(firstStart: Vec3, firstEnd: Vec3, secondStart: V
   return { first, second, firstRatio, secondRatio, distance: distance3(first, second) };
 }
 
-export function proposeRouteClearanceSolution(route: Route, point: Vec3, clearanceMm: number, obstacles: Route[] = [], walls: Wall[] = [], targetRouteId?: string): Route {
+export function proposeRouteClearanceSolution(route: Route, point: Vec3, clearanceMm: number, obstacles: Route[] = [], walls: Wall[] = [], targetRouteId?: string, options: CrossingClearanceOptions = {}): Route {
   let nearest = 0; let best = Number.POSITIVE_INFINITY; let nearestRatio = .5;
   route.points.slice(1).forEach((end, index) => {
     const start = route.points[index]; const delta = { x: end.x - start.x, y: end.y - start.y, z: end.z - start.z }; const lengthSquared = delta.x ** 2 + delta.y ** 2 + delta.z ** 2 || 1;
@@ -688,29 +1233,40 @@ export function proposeRouteClearanceSolution(route: Route, point: Vec3, clearan
   });
   const start = route.points[nearest]; const end = route.points[nearest + 1]; const segmentLength = Math.max(1, distance3(start, end)); const direction = { x: (end.x - start.x) / segmentLength, y: (end.y - start.y) / segmentLength, z: (end.z - start.z) / segmentLength };
   const center = { x: roundMm(start.x + (end.x - start.x) * nearestRatio), y: roundMm(start.y + (end.y - start.y) * nearestRatio), z: roundMm(start.z + (end.z - start.z) * nearestRatio) };
-  const approach = Math.min(300, Math.max(100, clearanceMm * 3)); const beforeDistance = Math.min(approach, nearestRatio * segmentLength); const afterDistance = Math.min(approach, (1 - nearestRatio) * segmentLength);
+  const approach = Math.max(100, clearanceMm * 3); const beforeDistance = Math.min(approach, nearestRatio * segmentLength); const afterDistance = Math.min(approach, (1 - nearestRatio) * segmentLength);
   const before = { x: roundMm(center.x - direction.x * beforeDistance), y: roundMm(center.y - direction.y * beforeDistance), z: roundMm(center.z - direction.z * beforeDistance) }; const after = { x: roundMm(center.x + direction.x * afterDistance), y: roundMm(center.y + direction.y * afterDistance), z: roundMm(center.z + direction.z * afterDistance) };
   const offset = Math.max(50, clearanceMm + 25); const candidates: Route[] = [];
-  const candidateFromDetour = (shift: Vec3) => {
-    const detour = [before, { x: before.x + shift.x, y: before.y + shift.y, z: before.z + shift.z }, { x: after.x + shift.x, y: after.y + shift.y, z: after.z + shift.z }, after];
-    const added = detour.map((routePoint) => ({ ...routePoint, id: crypto.randomUUID(), order: 0 })); const points = simplifyRoutePoints([...route.points.slice(0, nearest + 1), ...added, ...route.points.slice(nearest + 1)]).map((routePoint, order) => ({ ...routePoint, id: crypto.randomUUID(), order }));
-    const floorConcealed = !route.wallIds.length && center.y <= 50;
-    if (points.every((routePoint) => routePoint.y >= (floorConcealed ? -500 : 0))) candidates.push({ ...route, points });
-  };
   const associatedWalls = walls.filter((wall) => route.wallIds.includes(wall.id));
-  const wallOnly = route.wallIds.length > 0 && (!walls.length || route.points.slice(1).every((end, index) => associatedWalls.some((wall) => routeSegmentsOnWall({ points: [route.points[index], end] }, wall).length > 0)));
-  const floorConcealed = !route.wallIds.length && center.y <= 50;
-  if (floorConcealed) { candidateFromDetour({ x: 0, y: offset, z: 0 }); candidateFromDetour({ x: 0, y: -offset, z: 0 }); }
-  else { candidateFromDetour({ x: 0, y: offset, z: 0 }); candidateFromDetour({ x: 0, y: -offset, z: 0 }); }
   const conflictWall = associatedWalls.find((wall) => routeSegmentsOnWall({ points: [start, end] }, wall).length > 0);
+  const wallOnly = route.wallIds.length > 0 && (!walls.length || route.points.slice(1).every((routeEnd, index) => associatedWalls.some((wall) => routeSegmentsOnWall({ points: [route.points[index], routeEnd] }, wall).length > 0)));
+  const wallTop = conflictWall?.heightMm ?? options.wallTopMm ?? options.surfaceBounds?.ceilingMinimumY ?? Math.max(center.y + 500, 2700);
+  const verticalEnvelope = verticalEnvelopeAt(center.y, 0, wallTop, { ...options, wallTopMm: wallTop });
+  const candidateFromDetour = (shift: Vec3, detourBefore = before, detourAfter = after, smoothOffset = false) => {
+    const verticalOverpass = Math.abs(shift.y) > 1 && Math.abs(shift.x) <= 1 && Math.abs(shift.z) <= 1;
+    const detour = verticalOverpass || smoothOffset
+      ? smoothClearanceBridgeVector(detourBefore, detourAfter, shift, Math.max(10, Math.ceil(distance3(detourBefore, detourAfter) / 35)))
+      : [detourBefore, { x: detourBefore.x + shift.x, y: detourBefore.y + shift.y, z: detourBefore.z + shift.z }, { x: detourAfter.x + shift.x, y: detourAfter.y + shift.y, z: detourAfter.z + shift.z }, detourAfter];
+    if (verticalOverpass && detour.some((routePoint) => routePoint.y < verticalEnvelope.minimum || routePoint.y > verticalEnvelope.maximum)) return;
+    const added = detour.map((routePoint) => ({ ...routePoint, id: crypto.randomUUID(), order: 0 })); const points = simplifyRoutePoints([...route.points.slice(0, nearest + 1), ...added, ...route.points.slice(nearest + 1)]).map((routePoint, order) => ({ ...routePoint, id: crypto.randomUUID(), order }));
+    candidates.push({ ...route, points });
+  };
+  const minimumCurveSpan = Math.max(approach, raisedCosineHalfSpanMm(offset, options.bendRadiusMm ?? 0));
+  if (nearestRatio * segmentLength >= minimumCurveSpan && (1 - nearestRatio) * segmentLength >= minimumCurveSpan) {
+    const curveBefore = { x: roundMm(center.x - direction.x * minimumCurveSpan), y: roundMm(center.y - direction.y * minimumCurveSpan), z: roundMm(center.z - direction.z * minimumCurveSpan) };
+    const curveAfter = { x: roundMm(center.x + direction.x * minimumCurveSpan), y: roundMm(center.y + direction.y * minimumCurveSpan), z: roundMm(center.z + direction.z * minimumCurveSpan) };
+    const preferredDirection = center.y >= point.y ? 1 : -1;
+    [...verticalEnvelope.directions].sort((first) => first === preferredDirection ? -1 : 1)
+      .forEach((liftDirection) => candidateFromDetour({ x: 0, y: offset * liftDirection, z: 0 }, curveBefore, curveAfter));
+  }
   const verticalSegment = Math.hypot(direction.x, direction.z) <= .01 && Math.abs(direction.y) > .9;
   if (conflictWall && verticalSegment) {
     const length = Math.max(1, wallLength(conflictWall)); const normal = { x: -(conflictWall.end.z - conflictWall.start.z) / length, y: 0, z: (conflictWall.end.x - conflictWall.start.x) / length };
     // A vertical and a horizontal service necessarily intersect in the wall's
     // elevation plane. Pass briefly through a different valid depth layer,
     // then return to the configured lining centreline.
-    candidateFromDetour({ x: normal.x * offset, y: 0, z: normal.z * offset });
-    candidateFromDetour({ x: -normal.x * offset, y: 0, z: -normal.z * offset });
+    const currentDepth = worldToWallLocal(conflictWall, center).depthMm; const radius = Math.max(0, options.diameterMm ?? 0) / 2; const depthLimit = Math.max(0, conflictWall.thicknessMm / 2 - radius);
+    if (Math.abs(currentDepth + offset) <= depthLimit) candidateFromDetour({ x: normal.x * offset, y: 0, z: normal.z * offset }, before, after, true);
+    if (Math.abs(currentDepth - offset) <= depthLimit) candidateFromDetour({ x: -normal.x * offset, y: 0, z: -normal.z * offset }, before, after, true);
   }
   if (wallOnly) {
     const first = route.points[0]; const last = route.points.at(-1)!;
@@ -745,13 +1301,22 @@ export function proposeRouteClearanceSolution(route: Route, point: Vec3, clearan
     // the number of affected routes. Raw segment-pair counts are secondary so
     // a valid dogleg is not rejected merely because it briefly approaches the
     // same terminal route in two small segments.
-    return Number(targetRemains) * 1_000_000_000_000 + conflictingRoutes * 10_000_000_000 + conflicts.length * 100_000_000 + routeLength(candidate) + Math.max(0, candidate.points.length - route.points.length) * 10;
+    const turnPenalty = Math.max(500, options.turnPenaltyMm ?? 500); const minimumTurnSpacing = Math.max(250, (options.bendRadiusMm ?? 0) * 2);
+    const authoredCount = candidate.points.filter((routePoint) => !isAutomaticRoutePoint(routePoint)).length; const originalAuthoredCount = route.points.filter((routePoint) => !isAutomaticRoutePoint(routePoint)).length;
+    return Number(targetRemains) * 1_000_000_000_000 + conflictingRoutes * 10_000_000_000 + conflicts.length * 100_000_000
+      + routeTurnCount(candidate) * turnPenalty + routeCloseTurnSpacingPenalty(candidate, minimumTurnSpacing) * 8
+      + Math.max(0, authoredCount - originalAuthoredCount) * turnPenalty + routeLength(candidate);
   };
   return candidates.reduce((selected, candidate) => score(candidate) < score(selected) ? candidate : selected);
 }
 
-export function resolveRouteConflicts(route: Route, existingRoutes: Route[], priorities: Partial<Record<ServiceCategory, number>>, separations: Partial<Record<ServiceCategory, number>>, diameters: Partial<Record<ServiceCategory, number>> = {}, maximumAttempts = 10, walls: Wall[] = []) {
+export function resolveRouteConflicts(route: Route, existingRoutes: Route[], priorities: Partial<Record<ServiceCategory, number>>, separations: Partial<Record<ServiceCategory, number>>, diameters: Partial<Record<ServiceCategory, number>> = {}, maximumAttempts = 10, walls: Wall[] = [], bendRadii: Partial<Record<ServiceCategory, number>> = {}, surfaceBounds?: RouteSurfaceBounds, turnPenaltyMm = 500, devices: Device[] = []) {
   const conflictsFor = (candidate: Route) => existingRoutes.flatMap((other) => findRouteIntersections([other, candidate], priorities, separations, diameters));
+  const bounds = surfaceBounds ?? { floorMinimumY: -500, floorMaximumY: 0, ceilingMinimumY: Math.max(...walls.map((wall) => wall.heightMm), 2700), ceilingMaximumY: Math.max(...walls.map((wall) => wall.heightMm), 2700) + 500 };
+  const finish = (candidate: Route) => {
+    const optimized = optimizeRouteControlPoints(candidate, existingRoutes, priorities, separations, diameters, bendRadii[candidate.serviceCategory] ?? 0, bounds, devices, turnPenaltyMm);
+    return { route: optimized, remainingConflicts: conflictsFor(optimized).length };
+  };
   const initiallyConflictingIds = new Set(conflictsFor(route).map((item) => item.routeAId === route.id ? item.routeBId : item.routeAId));
   const laneClearance = Math.max(separations[route.serviceCategory] ?? 30, routeDisplayDiameterMm(route, diameters), ...existingRoutes.filter((item) => initiallyConflictingIds.has(item.id)).map((item) => routePairClearanceMm(route, item, separations, diameters)));
   const associatedWalls = walls.filter((wall) => route.wallIds.includes(wall.id));
@@ -764,15 +1329,15 @@ export function resolveRouteConflicts(route: Route, existingRoutes: Route[], pri
   const laneRoute = lanePoints === route.points ? route : { ...route, points: lanePoints.map((point, order) => ({ ...point, id: 'id' in point && typeof point.id === 'string' ? point.id : crypto.randomUUID(), order })) };
   let current = laneRoute; let best = laneRoute; let bestConflicts = conflictsFor(laneRoute); const seen = new Set<string>();
   for (let attempt = 0; attempt < maximumAttempts && bestConflicts.length; attempt++) {
-    const currentConflicts = conflictsFor(current); if (!currentConflicts.length) return { route: current, remainingConflicts: 0 };
+    const currentConflicts = conflictsFor(current); if (!currentConflicts.length) return finish(current);
     const conflict = currentConflicts[0]; const otherRouteId = conflict.routeAId === current.id ? conflict.routeBId : conflict.routeAId; const otherRoute = existingRoutes.find((item) => item.id === otherRouteId); const clearance = otherRoute ? routePairClearanceMm(current, otherRoute, separations, diameters) : Math.max(10, separations[current.serviceCategory] ?? 30, routeDisplayDiameterMm(current, diameters));
-    const candidate = proposeRouteClearanceSolution(current, conflict.point, clearance, existingRoutes, walls, otherRouteId); const signature = candidate.points.map((point) => `${point.x},${point.y},${point.z}`).join('|');
+    const candidate = proposeRouteClearanceSolution(current, conflict.point, clearance, existingRoutes, walls, otherRouteId, { bendRadiusMm: bendRadii[current.serviceCategory] ?? 0, diameterMm: routeDisplayDiameterMm(current, diameters), surfaceBounds, turnPenaltyMm }); const signature = candidate.points.map((point) => `${point.x},${point.y},${point.z}`).join('|');
     if (seen.has(signature)) break; seen.add(signature); current = candidate;
     const candidateConflicts = conflictsFor(candidate);
     if (candidateConflicts.length < bestConflicts.length || candidateConflicts.length === bestConflicts.length && routeLength(candidate) < routeLength(best)) { best = candidate; bestConflicts = candidateConflicts; }
-    if (!candidateConflicts.length) return { route: candidate, remainingConflicts: 0 };
+    if (!candidateConflicts.length) return finish(candidate);
   }
-  return { route: best, remainingConflicts: bestConflicts.length };
+  return finish(best);
 }
 
 export function orderWallBoundary(walls: Wall[], toleranceMm = 2): Vec2[] | null {
