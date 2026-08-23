@@ -249,7 +249,15 @@ export interface Device {
   hidden: boolean;
 }
 
-export interface RoutePoint extends Vec3 { id: Id; order: number }
+export interface RoutePoint extends Vec3 {
+  id: Id;
+  order: number;
+  /**
+   * Geometry sampled by the planner for a smooth crossing overpass. These
+   * points describe the installed curve but are not user-authored turns.
+   */
+  automatic?: 'crossing-clearance';
+}
 
 export interface Route {
   id: Id;

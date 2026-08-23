@@ -18,7 +18,8 @@ const migrations = [
   { version: 8, name: 'layered walls and route planning', path: join(migrationsDir, '008_wall_layers_and_route_planning.sql') },
   { version: 9, name: 'expandable device ports', path: join(migrationsDir, '009_expandable_device_ports.sql') },
   { version: 10, name: 'global device type defaults', path: join(migrationsDir, '010_global_device_type_defaults.sql') },
-  { version: 11, name: 'route installation date', path: join(migrationsDir, '011_route_installation_date.sql') }
+  { version: 11, name: 'route installation date', path: join(migrationsDir, '011_route_installation_date.sql') },
+  { version: 12, name: 'automatic route points', path: join(migrationsDir, '012_route_point_automation.sql') }
 ];
 
 const json = (value: unknown) => JSON.stringify(value);
@@ -179,7 +180,7 @@ export class ProjectRepository {
           roomIds: parse(row.room_ids_json, []), wallIds: parse(row.wall_ids_json, []), sourceDeviceId: row.source_device_id ? String(row.source_device_id) : undefined,
           destinationDeviceId: row.destination_device_id ? String(row.destination_device_id) : undefined, sourcePortId: row.source_port_id ? String(row.source_port_id) : undefined,
           destinationPortId: row.destination_port_id ? String(row.destination_port_id) : undefined,
-          points: routePoints.filter((point) => point.route_id === row.id).map((point) => ({ id: String(point.id), order: Number(point.sort_order), x: Number(point.x_mm), y: Number(point.y_mm), z: Number(point.z_mm) })),
+          points: routePoints.filter((point) => point.route_id === row.id).map((point) => ({ id: String(point.id), order: Number(point.sort_order), x: Number(point.x_mm), y: Number(point.y_mm), z: Number(point.z_mm), automatic: point.automatic === 'crossing-clearance' ? 'crossing-clearance' as const : undefined })),
           installedLengthMm: row.installed_length_mm == null ? undefined : Number(row.installed_length_mm), spareLengthMm: row.spare_length_mm == null ? undefined : Number(row.spare_length_mm),
           ...technical,
           installationStatus: String(row.installation_status) as never, installationDate: row.installation_date ? String(row.installation_date) : undefined, testStatus: String(row.test_status), testDate: row.test_date ? String(row.test_date) : undefined,
@@ -250,7 +251,7 @@ export class ProjectRepository {
           port.maximumVoltage ?? null, port.maximumCurrent ?? null, port.networkSpeed ?? null, port.mediaType ?? null, port.notes, json(port.position), port.face, Number(port.required), port.spaceRequiredMm ?? null));
       });
       const insertRoute = this.db.prepare('INSERT INTO routes (id,project_id,floor_id,kind,name,service_category,subtype,standard,manufacturer,product_code,source_device_id,destination_device_id,source_port_id,destination_port_id,room_ids_json,wall_ids_json,installed_length_mm,spare_length_mm,technical_properties_json,installation_status,test_status,test_date,notes,custom_properties_json,locked,hidden,installation_date) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
-      const insertPoint = this.db.prepare('INSERT INTO route_points VALUES (?,?,?,?,?,?)');
+      const insertPoint = this.db.prepare('INSERT INTO route_points (id,route_id,sort_order,x_mm,y_mm,z_mm,automatic) VALUES (?,?,?,?,?,?,?)');
       snapshot.routes.forEach((item) => {
         const { voltage, current, power, conductors, conductorCrossSectionMm2, wireGauge, shielding, jacketType, fireRating, installationMethod,
           maximumDataRate, poeClass, frequencyRating, physicalIdentification, labelAtSource, labelAtDestination, conduitAssociation, pipe, duct, flowDirection,
@@ -261,7 +262,7 @@ export class ProjectRepository {
             fireRating, installationMethod, maximumDataRate, poeClass, frequencyRating, physicalIdentification, labelAtSource, labelAtDestination, conduitAssociation, pipe, duct, flowDirection,
             functionalColor, physicalColor, displayColor, colorSource, conductorConfiguration, conductorColors, ethernetTerminationStandard, ethernetPairColors, conduit }),
           item.installationStatus, item.testStatus, item.testDate ?? null, item.notes, json(item.customProperties), Number(item.locked), Number(item.hidden), item.installationDate ?? null);
-        item.points.forEach((point, order) => insertPoint.run(point.id, item.id, order, point.x, point.y, point.z));
+        item.points.forEach((point, order) => insertPoint.run(point.id, item.id, order, point.x, point.y, point.z, point.automatic ?? null));
       });
       const insertMeasurement = this.db.prepare('INSERT INTO measurements (id,project_id,type,name,start_json,end_json,wall_id,room_id,referenced_object_ids_json,text,visible,locked) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)');
       snapshot.measurements.forEach((item) => insertMeasurement.run(item.id, snapshot.id, item.type, item.name, json(item.start), json(item.end), item.wallId ?? null, item.roomId ?? null, json(item.referencedObjectIds), item.text, Number(item.visible), Number(item.locked)));

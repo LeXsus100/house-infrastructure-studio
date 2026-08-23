@@ -1,5 +1,5 @@
 import type { ProjectSnapshot, Route, Vec3 } from '../../shared/types';
-import { confineRouteToAssociatedWalls, findRouteIntersections, resolveRouteConflicts, routeLength, routeTurnCount } from './geometry';
+import { confineRouteToAssociatedWalls, findRouteIntersections, resolveRouteConflicts, routeLength, routeSurfaceBounds, routeTurnCount } from './geometry';
 import { rerouteConcealedRouteViaSurface, type ConcealedRouteSurface } from './project';
 
 export interface RouteLayoutMetrics {
@@ -90,7 +90,7 @@ function coordinatedProposal(project: ProjectSnapshot, floorRoutes: Route[], blo
   for (const original of ordered) {
     const candidate = selected.get(original.id)!;
     const resolved = project.preferences.avoidRouteOverlaps
-      ? resolveRouteConflicts(candidate, installed, project.preferences.routeOverlapPriorities, project.preferences.routeSeparationMm, project.preferences.routeDiameterMm, 12, project.walls).route
+      ? resolveRouteConflicts(candidate, installed, project.preferences.routeOverlapPriorities, project.preferences.routeSeparationMm, project.preferences.routeDiameterMm, 12, project.walls, project.preferences.routeBendRadiusMm, routeSurfaceBounds(project.floors, candidate.floorId), project.preferences.routeTurnPenaltyMm, project.devices.filter((device) => device.floorId === candidate.floorId)).route
       : candidate;
     const confined = confineRouteToAssociatedWalls(resolved, project.walls);
     installed.push(confined); proposedById.set(confined.id, confined);

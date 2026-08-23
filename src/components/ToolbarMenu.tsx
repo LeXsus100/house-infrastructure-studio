@@ -12,10 +12,11 @@ interface Props<T extends string> {
   label: string;
   options: ToolbarMenuOption<T>[];
   selectedValue?: T;
+  tutorialId?: string;
   onSelect: (value: T) => void;
 }
 
-export function ToolbarMenu<T extends string>({ icon, label, options, selectedValue, onSelect }: Props<T>) {
+export function ToolbarMenu<T extends string>({ icon, label, options, selectedValue, tutorialId, onSelect }: Props<T>) {
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -24,12 +25,12 @@ export function ToolbarMenu<T extends string>({ icon, label, options, selectedVa
     document.addEventListener('pointerdown', close); document.addEventListener('keydown', escape);
     return () => { document.removeEventListener('pointerdown', close); document.removeEventListener('keydown', escape); };
   }, []);
-  return <div className="toolbar-menu" ref={root}>
+  return <div className="toolbar-menu" ref={root} data-tutorial={tutorialId}>
     <button className={open ? 'toolbar-menu-trigger active' : 'toolbar-menu-trigger'} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
       {icon}<span>{label}</span><ChevronDown size={13} />
     </button>
     {open && <div className="toolbar-menu-popover" role="menu">
-      {options.map((option) => <button key={option.value} role="menuitemradio" aria-checked={selectedValue === option.value} onClick={() => { onSelect(option.value); setOpen(false); }}>
+      {options.map((option) => <button key={option.value} data-tutorial={tutorialId ? `${tutorialId}-${option.value}` : undefined} role="menuitemradio" aria-checked={selectedValue === option.value} onClick={() => { onSelect(option.value); setOpen(false); }}>
         <span className="menu-check">{selectedValue === option.value && <Check size={14} />}</span>
         <span><strong>{option.label}</strong>{option.description && <small>{option.description}</small>}</span>
       </button>)}

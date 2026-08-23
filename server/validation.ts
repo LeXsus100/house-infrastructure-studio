@@ -48,7 +48,7 @@ const device = z.object({
   networkRequirements: z.string(), notes: z.string(), installationStatus: z.enum(['planned', 'installed', 'tested', 'decommissioned']),
   installationDate: z.string().optional(), functionalColor: z.string().max(100).optional(), physicalColor: z.string().max(100).optional(), displayColor: z.string().max(40).optional(), colorSource: colorSource.optional(), showLabel: z.boolean().default(false), ports: z.array(port), rackConfiguration: rackConfiguration.optional(), riserRouteLinks: z.array(riserRouteLink).max(512).optional(), junctionRouteGroups: z.array(junctionRouteGroup).max(512).optional(), customProperties, locked: z.boolean(), hidden: z.boolean()
 });
-const routePoint = vec3.extend({ id, order: z.number().int().nonnegative() });
+const routePoint = vec3.extend({ id, order: z.number().int().nonnegative(), automatic: z.literal('crossing-clearance').optional() });
 const route = z.object({
   id, kind: z.enum(['cable', 'pipe', 'duct']), name: z.string().min(1).max(200), serviceCategory: z.string(), subtype: z.string(),
   standard: z.string(), manufacturer: z.string(), productCode: z.string(), floorId: id, roomIds: z.array(id), wallIds: z.array(id),
