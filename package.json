@@ -1,7 +1,7 @@
 {
   "name": "house-infrastructure-studio",
   "private": true,
-  "version": "0.1.2",
+  "version": "0.1.21",
   "description": "Local-only 3D residential infrastructure and MEP documentation editor.",
   "license": "MIT",
   "author": "Luigi Casagrande",

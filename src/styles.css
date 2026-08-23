@@ -464,6 +464,16 @@ kbd { padding: 1px 4px; border: 1px solid var(--line); background: var(--surface
 .loading-screen img { width: 64px; height: 64px; object-fit: contain; }
 .loading-screen strong { font-size: 18px; }
 .loading-screen span { color: var(--muted); }
+.first-run-screen { height: 100%; display: grid; place-items: center; padding: 24px; background: var(--bg); }
+.first-run-card { display: flex; flex-direction: column; width: min(470px, 100%); gap: 12px; padding: 30px; border: 1px solid var(--line-strong); border-radius: 12px; background: var(--surface); box-shadow: var(--shadow); }
+.first-run-card img { width: 64px; height: 64px; object-fit: contain; }
+.first-run-card .eyebrow { color: var(--accent); font-size: 9px; font-weight: 700; letter-spacing: .14em; }
+.first-run-card h1 { margin: 0; font-size: 22px; }
+.first-run-card p { margin: 0 0 4px; color: var(--muted); line-height: 1.6; }
+.first-run-card form { display: flex; flex-direction: column; gap: 7px; }
+.first-run-card form label { color: var(--muted); font-size: 10px; font-weight: 700; }
+.first-run-card form button { margin-top: 5px; min-height: 38px; }
+.first-run-notice { color: var(--danger); line-height: 1.5; }
 
 /* Level and blueprint management */
 .compact-level-settings { grid-template-columns: 1fr 1fr; }

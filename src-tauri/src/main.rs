@@ -3,7 +3,7 @@
 use std::{
     fs::{self, OpenOptions},
     io::Write,
-    path::Path,
+    path::{Path, PathBuf},
     sync::Mutex,
 };
 use tauri::{path::BaseDirectory, Manager};
@@ -20,6 +20,15 @@ fn append_startup_log(path: &Path, message: impl AsRef<str>) {
     }
 }
 
+fn normalize_windows_process_path(path: PathBuf) -> PathBuf {
+    let value = path.to_string_lossy();
+    let prefix = "\\\\?\\";
+    value
+        .strip_prefix(prefix)
+        .map(PathBuf::from)
+        .unwrap_or(path)
+}
+
 fn main() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -27,11 +36,15 @@ fn main() {
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             fs::create_dir_all(&data_dir)?;
-            let server_entry = app
-                .path()
-                .resolve("server/desktop.mjs", BaseDirectory::Resource)?;
-            let migrations_dir = app.path().resolve("migrations", BaseDirectory::Resource)?;
-            let database_path = data_dir.join("house-infrastructure.sqlite");
+            let server_entry = normalize_windows_process_path(
+                app.path()
+                    .resolve("server/desktop.mjs", BaseDirectory::Resource)?,
+            );
+            let migrations_dir = normalize_windows_process_path(
+                app.path().resolve("migrations", BaseDirectory::Resource)?,
+            );
+            let database_path =
+                normalize_windows_process_path(data_dir.join("house-infrastructure.sqlite"));
             let startup_log = data_dir.join("desktop-startup.log");
 
             append_startup_log(&startup_log, "--- desktop startup ---");
@@ -47,9 +60,10 @@ fn main() {
             // The packaged sidecar is installed next to the Tauri executable. Resolve that
             // resource explicitly instead of relying on the plugin's relative sidecar lookup;
             // the latter can resolve against a different working directory in installed builds.
-            let sidecar_path = app
-                .path()
-                .resolve("house-studio-node.exe", BaseDirectory::Resource)?;
+            let sidecar_path = normalize_windows_process_path(
+                app.path()
+                    .resolve("house-studio-node.exe", BaseDirectory::Resource)?,
+            );
             append_startup_log(
                 &startup_log,
                 format!(
