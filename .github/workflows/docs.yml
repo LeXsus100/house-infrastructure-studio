@@ -16,9 +16,6 @@ concurrency:
 
 jobs:
   deploy:
-    # GitHub Pages is unavailable for this private repository on the current plan.
-    # The workflow becomes active automatically if the repository is public.
-    if: github.event.repository.visibility == 'public'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
