@@ -4,6 +4,11 @@ dist/
 coverage/
 playwright-report/
 test-results/
+documentation/.venv/
+documentation/site/
+# Local limitations notes are not part of the published project documentation.
+**/*LIMITATIONS*.md
+**/*limitations*.md
 *.log
 npm-debug.log*
 

@@ -1,6 +1,6 @@
 [package]
 name = "house-infrastructure-studio"
-version = "0.1.21"
+version = "0.2.0"
 description = "Local residential infrastructure documentation editor"
 authors = ["Luigi Casagrande"]
 edition = "2021"

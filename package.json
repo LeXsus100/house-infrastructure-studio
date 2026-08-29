@@ -1,7 +1,7 @@
 {
   "name": "house-infrastructure-studio",
   "private": true,
-  "version": "0.1.21",
+  "version": "0.2.0",
   "description": "Local-only 3D residential infrastructure and MEP documentation editor.",
   "license": "MIT",
   "author": "Luigi Casagrande",
@@ -22,6 +22,9 @@
     "dev:web": "vite --host 127.0.0.1 --port 5173",
     "dev:server": "tsx watch server/index.ts",
     "build": "tsc -b config/tsconfig.json && vite build",
+    "docs:setup": "python -m venv documentation/.venv && documentation\\.venv\\Scripts\\python -m pip install --requirement documentation/requirements.txt",
+    "docs:serve": "cd documentation && .venv\\Scripts\\zensical serve --open",
+    "docs:build": "cd documentation && .venv\\Scripts\\zensical build --clean --strict",
     "start": "tsx server/start.ts",
     "test": "vitest run",
     "test:watch": "vitest",
