@@ -29,7 +29,7 @@ the services that will eventually sit inside walls, floors, and ceilings.
 <div class="his-doc-media-pair">
   <figure class="his-doc-media">
     <img
-      src="../../assets/media/single-level-editor-view.png"
+      src="../assets/media/single-level-editor-view.png"
       alt="House Infrastructure Studio showing the active ground floor in the 3D editor"
       loading="lazy"
       decoding="async"
@@ -42,7 +42,7 @@ the services that will eventually sit inside walls, floors, and ceilings.
   </figure>
   <figure class="his-doc-media">
     <img
-      src="../../assets/media/full-house-multilevel-view.png"
+      src="../assets/media/full-house-multilevel-view.png"
       alt="House Infrastructure Studio showing two aligned floors in Full house view"
       loading="lazy"
       decoding="async"
@@ -94,7 +94,7 @@ display colour remain separate and editable throughout the project.
 
 <figure class="his-doc-media his-doc-media--motion">
   <img
-    src="../../assets/media/xray-mode-toggle.gif"
+    src="../assets/media/xray-mode-toggle.gif"
     alt="Animated editor recording switching X-ray mode off and on to reveal concealed services"
     loading="lazy"
     decoding="async"
@@ -134,7 +134,7 @@ Field-ready output includes:
 
 <figure class="his-doc-media his-doc-media--motion">
   <img
-    src="../../assets/media/capabilities-feature-tour.gif"
+    src="../assets/media/capabilities-feature-tour.gif"
     alt="Animated tour of the Overview, Light, Photo, and Settings areas in House Infrastructure Studio"
     loading="lazy"
     decoding="async"
