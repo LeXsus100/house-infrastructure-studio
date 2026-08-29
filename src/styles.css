@@ -77,6 +77,8 @@ h3 { margin-bottom: 10px; font-size: 12px; }
 .language-control { display: flex; margin-left: 4px; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
 .language-control button { min-width: 29px; min-height: 27px; padding: 3px 5px; border: 0; border-radius: 0; background: transparent; color: var(--muted); font-size: 9px; }
 .language-control button.active { color: #071711; background: var(--accent); }
+.documentation-link { display: grid; place-items: center; width: 30px; height: 29px; flex: 0 0 auto; margin-left: 4px; color: var(--muted); border: 1px solid var(--line); border-radius: 6px; background: transparent; text-decoration: none; }
+.documentation-link:hover, .documentation-link:focus-visible { color: var(--accent); border-color: var(--accent); background: var(--accent-deep); }
 .workspace-grid { min-height: 0; display: grid; grid-template-columns: 252px minmax(320px, 1fr) 310px; }
 .photo-workspace-grid { min-height: 0; display: grid; grid-template-columns: 252px minmax(320px,1fr); }
 .lighting-sidebar { overflow: hidden; }

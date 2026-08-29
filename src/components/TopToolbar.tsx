@@ -1,4 +1,5 @@
-import { BarChart3, Download, Eye, FolderOpen, Home, Image, Lightbulb, Moon, PanelTop, Redo2, RotateCcw, Save, Settings, Sun, Undo2 } from 'lucide-react';
+import { BarChart3, BookOpen, Download, Eye, FolderOpen, Home, Image, Lightbulb, Moon, PanelTop, Redo2, RotateCcw, Save, Settings, Sun, Undo2 } from 'lucide-react';
+import { DOCUMENTATION_URL } from '../../shared/branding';
 import type { ProjectSnapshot, ThemeMode, ViewMode } from '../../shared/types';
 import type { ViewCommand } from '../editor/HouseViewport';
 import { useI18n } from '../lib/i18n';
@@ -32,6 +33,9 @@ interface Props {
 
 export function TopToolbar(props: Props) {
   const { language, setLanguage, t } = useI18n();
+  const documentationUrl = window.location.port === '5173'
+    ? 'http://127.0.0.1:8000/house-infrastructure-studio/'
+    : DOCUMENTATION_URL;
   return <header className="top-toolbar">
     <div className="brand-area"><div className="brand"><img src={props.appIconUrl} alt="" /><div><strong>{props.project.title}</strong><span>{t('Infrastructure editor · Local only')}</span></div></div><button className={props.page === 'overview' ? 'overview-nav active' : 'overview-nav'} onClick={() => props.onPage(props.page === 'overview' ? 'editor' : 'overview')}><BarChart3 size={16} /><span>{t(props.page === 'overview' ? 'Editor' : 'Overview')}</span></button><button className={props.page === 'light' ? 'light-nav active' : 'light-nav'} onClick={() => props.onPage(props.page === 'light' ? 'editor' : 'light')}><Lightbulb size={16} /><span>{props.page === 'light' ? t('Editor') : t('Light view')}</span></button><button className={props.page === 'photo' ? 'photo-nav active' : 'photo-nav'} onClick={() => props.onPage(props.page === 'photo' ? 'editor' : 'photo')}><Image size={16} /><span>{t(props.page === 'photo' ? 'Editor' : 'Photo')}</span></button><button className="settings-nav" onClick={props.onOpenSettings}><Settings size={16} /><span>{t('Settings')}</span></button></div>
     <nav className="toolbar-actions" aria-label="Project and view actions">
@@ -55,6 +59,7 @@ export function TopToolbar(props: Props) {
       ]} onSelect={(value) => { if (value === 'elevation') props.onOpenElevation(); if (value === 'batch') props.onBatchExport(); if (value === 'backup') props.onExportBackup(); if (value === 'import') props.onImportBackup(); }} />
       <div className="theme-control" aria-label={t('Theme')}><button className={props.theme === 'light' ? 'active' : ''} title={t('Light theme')} onClick={() => props.onTheme('light')}><Sun size={15} /></button><button className={props.theme === 'system' ? 'active' : ''} title={t('Use system theme')} onClick={() => props.onTheme('system')}><Home size={15} /></button><button className={props.theme === 'dark' ? 'active' : ''} title={t('Dark theme')} onClick={() => props.onTheme('dark')}><Moon size={15} /></button></div>
       <div className="language-control" aria-label="Language"><button className={language === 'en' ? 'active' : ''} onClick={() => setLanguage('en')}>EN</button><button className={language === 'it' ? 'active' : ''} onClick={() => setLanguage('it')}>IT</button></div>
+      <a className="documentation-link" href={documentationUrl} target="_blank" rel="noreferrer" aria-label={t('Open documentation')} title={t('Open documentation')}><BookOpen size={15} /></a>
     </nav>
   </header>;
 }

@@ -1,0 +1,41 @@
+name: Publish documentation
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # GitHub Pages is unavailable for this private repository on the current plan.
+    # The workflow becomes active automatically if the repository is public.
+    if: github.event.repository.visibility == 'public'
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/configure-pages@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+      - name: Install the pinned documentation toolchain
+        run: pip install --requirement documentation/requirements.txt
+      - name: Build the release documentation
+        working-directory: documentation
+        run: zensical build --clean --strict
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: documentation/site
+      - uses: actions/deploy-pages@v5
+        id: deployment
