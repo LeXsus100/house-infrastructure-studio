@@ -6,7 +6,7 @@ The application uses React, TypeScript, React Three Fiber/Three.js, an Express A
 
 This is open-source software released under the [MIT License](LICENSE).
 
-Read the [documentation](https://github.com/LeXsus100/house-infrastructure-studio/tree/main/documentation/docs) for the getting-started guide, user guide, reference, development notes, and release history.
+Read the [documentation](https://lexsus100.github.io/house-infrastructure-studio/) for the getting-started guide, user guide, reference, development notes, and release history.
 
 ## Development provenance
 
@@ -64,7 +64,7 @@ npm run desktop:build
 
 The installer is written under `src-tauri/target/release/bundle/nsis/`. It bundles the web client, a private API on `127.0.0.1:4281`, SQLite migrations, a Node.js 24 runtime, and an embedded WebView2 bootstrapper. This package supports offline use on a Windows computer with WebView2. Desktop project data is stored in the operating system application-data directory, separate from the browser/server edition's `.data/` folder.
 
-The installer is currently unsigned and can trigger Windows SmartScreen. Checksums verify download integrity; trusted Authenticode code signing would establish publisher identity. See [Publishing releases](https://github.com/LeXsus100/house-infrastructure-studio/blob/main/documentation/docs/development/publishing.md) for the release and signing procedure.
+The installer is currently unsigned and can trigger Windows SmartScreen. Checksums verify download integrity; trusted Authenticode code signing would establish publisher identity. See [Publishing releases](https://lexsus100.github.io/house-infrastructure-studio/development/publishing/) for the release and signing procedure.
 
 ## Local database
 
@@ -89,3 +89,11 @@ npm run db:reset
 Each project also receives its own local workspace at `.data/projects/<project-uuid>/`, containing a validated `project.json` mirror plus dedicated `assets/` and `exports/` folders. **Projects → Create another project** asks for a separate project name, preserves the current project, and creates a new UUID workspace.
 
 `db:reset` permanently removes the local SQLite database, its WAL files, and all `.data/projects/` workspaces. Export a JSON project backup from the toolbar first if the data matters. To use another local location, set `HOUSE_INFRASTRUCTURE_DB_PATH` before starting the server. The older `CASA_DB_PATH` variable remains accepted only for backward compatibility.
+
+## Contributing
+
+See the [Contributing guide](https://lexsus100.github.io/house-infrastructure-studio/development/contributing/) for development conventions, validation steps, and pull request expectations.
+
+## Security
+
+See the [Security policy](https://lexsus100.github.io/house-infrastructure-studio/development/security/) for reporting vulnerabilities and handling security-sensitive changes.
