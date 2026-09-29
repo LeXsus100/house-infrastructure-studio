@@ -1,20 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, type ThreeEvent, useFrame, useLoader, useThree } from '@react-three/fiber';
 import { Edges, GizmoHelper, GizmoViewport, Grid, Html, Line, OrbitControls, OrthographicCamera, PerspectiveCamera } from '@react-three/drei';
-import { BufferGeometry, DoubleSide, Float32BufferAttribute, MOUSE, Quaternion, SRGBColorSpace, TextureLoader, Vector3, type Group } from 'three';
+import { BufferGeometry, DoubleSide, Float32BufferAttribute, MOUSE, Quaternion, SRGBColorSpace, TextureLoader, Vector3, type Group, type Object3D } from 'three';
 import type { Device, DevicePort, DeviceType, ProjectSnapshot, Selection, ServiceCategory, ToolMode, Vec2, Vec3, ViewMode, Wall } from '../../shared/types';
-import { ceilingRouteHeight, devicePlanObstacle, devicePortWorldPosition, deviceSafeTerminalLead, distance3, floorRouteHeight, isAutomaticRoutePoint, mmToM, mToMm, nearestEndpoint, openingPlanGeometry, pointInPolygon, preferredOrthogonalPlaneRoute, preferSharedWallRoute, projectWallDrawingHitToCenterline, roundedRoutePoints, routeDeviceClearanceConflicts, routeDisplayDiameterMm, routeSegmentAvoidsOpenings, routeSegmentCrossesDeviceBody, routeSegmentDetourDevices, routeUsesTubeRendering, shortestWallRoute, simplifyRoutePoints, snapPoint, wallDrawingSnap, wallLength, wallLocalToWorld, wallRenderEndProfiles, wallRenderIntersectionCuts, wallServiceDepthMm, worldToWallLocal, type WallDrawingSnapResult, type WallRenderIntersectionCut } from '../lib/geometry';
+import { ceilingRouteHeight, devicePlanObstacle, deviceRouteEndpointWorldPosition, deviceSafeTerminalLead, distance3, floorRouteHeight, gradeRoutePlaneSurfaces, isAutomaticRoutePoint, mmToM, mToMm, nearestEndpoint, openingPlanGeometry, pointInPolygon, preferredDirectPlaneRoute, preferSharedWallRoute, projectWallDrawingHitToCenterline, roundedRoutePoints, routeDeviceClearanceConflicts, routeDisplayDiameterMm, routeSegmentAvoidsOpenings, routeSegmentCrossesDeviceBody, routeSegmentDetourDevices, routeSurfaceBounds, routeUsesTubeRendering, shortestWallRoute, simplifyRoutePoints, snapPoint, wallDrawingSnap, wallLength, wallLocalToWorld, wallRenderEndProfiles, wallRenderIntersectionCuts, wallServiceDepthMm, worldToWallLocal, type WallDrawingSnapResult, type WallRenderIntersectionCut } from '../lib/geometry';
 import { WALL_PRISM_TRIANGLE_INDICES, wallPrismVerticesMm, type WallPrismBoundsMm } from '../lib/wallMesh';
 import { buildPolylinePath, routeDirectionMarkerDistances, samplePolylinePath } from '../lib/polyline';
 import { effectiveRiserDiameterMm, riserRouteGroups, riserRouteSlots } from '../lib/riser';
 import { RackModel3D } from './RackModel3D';
 import { RoutePortDialog } from '../components/RoutePortDialog';
-import { routeEndpointDirectionsCoherent, type RouteEndpointRole } from '../lib/ports';
+import { routeEndpointDirectionsCoherent, routeFlowFromEndpointPorts, type RouteEndpointRole } from '../lib/ports';
 import { DeviceDetails3D, JunctionBox3D } from './DeviceDetails3D';
-import { Camera } from 'lucide-react';
+import { Camera, X } from 'lucide-react';
 import type { PhotoCategory } from '../../shared/types';
 import { useI18n } from '../lib/i18n';
 import { clipRouteToRoom } from '../lib/roomIsolation';
+import { formatMeasurementLabel } from '../lib/measurement';
 
 export type ViewCommand = 'reset' | 'fit-house' | 'fit-selection' | 'focus-point' | 'top' | 'front' | 'rear' | 'left' | 'right' | 'iso';
 
@@ -34,7 +35,9 @@ interface Props {
   cancelToken: number;
   sceneTheme: 'light' | 'dark';
   suppressSceneLabels?: boolean;
-  photoMode?: boolean;
+  snapshotMode?: boolean;
+  snapshotPixelRatio?: number;
+  showPhotoMarkers?: boolean;
   photoPlacementActive?: boolean;
   visiblePhotoCategories?: Set<PhotoCategory>;
   suppressRouteMotion?: boolean;
@@ -46,7 +49,6 @@ interface Props {
   placementType?: DeviceType;
   routeKind: 'cable' | 'pipe' | 'duct' | 'junction' | 'transition';
   routeService: ServiceCategory;
-  measurementType: ProjectSnapshot['measurements'][number]['type'];
   onSelect: (selection: Selection | null, additive?: boolean) => void;
   onCreateWall: (start: Vec2, end: Vec2) => void;
   onCreateRoom: (boundary: Vec2[]) => void;
@@ -54,7 +56,7 @@ interface Props {
   onPlaceDevice: (position: Vec3, wallId?: string, wallSide?: Device['wallSide']) => void;
   onCreateRoute: (points: Vec3[], wallIds: string[], sourceDeviceId?: string, destinationDeviceId?: string, sourcePortId?: string, destinationPortId?: string) => boolean;
   onCreateRouteJunction: (position: Vec3, routeId?: string, wallId?: string) => void;
-  onCreateMeasurement: (start: Vec3, end: Vec3, type?: ProjectSnapshot['measurements'][number]['type'], referencedObjectIds?: string[]) => void;
+  onCreateMeasurement: (start: Vec3, end: Vec3, referencedObjectIds?: string[]) => void;
   onAddDevicePort: (deviceId: string, port: DevicePort) => void;
   onReassignRoutePort: (routeId: string, deviceId: string, role: RouteEndpointRole, portId: string) => void;
   onStatus: (status: { x: number; y: number; z: number; hint?: string }) => void;
@@ -65,6 +67,51 @@ interface Props {
 }
 
 type RouteSurface = string | 'floor' | 'ceiling' | 'shaft' | 'terminal';
+
+type MeasurementTargetKind = 'floor' | 'wall' | 'device' | 'structure' | 'route' | 'room' | 'measurement';
+
+interface MeasurementTarget {
+  key: string;
+  kind: MeasurementTargetKind;
+  id?: string;
+  label: string;
+  point: Vec3;
+}
+
+interface MeasurementPickerState {
+  left: number;
+  top: number;
+  targets: MeasurementTarget[];
+}
+
+function sceneMeasurementIdentity(object: Object3D): { kind: Exclude<MeasurementTargetKind, 'structure'>; id: string } | undefined {
+  let current: Object3D | null = object;
+  while (current) {
+    if (typeof current.userData.deviceId === 'string') return { kind: 'device', id: current.userData.deviceId };
+    if (typeof current.userData.routeId === 'string') return { kind: 'route', id: current.userData.routeId };
+    if (typeof current.userData.wallId === 'string') return { kind: 'wall', id: current.userData.wallId };
+    if (typeof current.userData.roomId === 'string') return { kind: 'room', id: current.userData.roomId };
+    if (typeof current.userData.measurementId === 'string') return { kind: 'measurement', id: current.userData.measurementId };
+    if (typeof current.userData.floorId === 'string') return { kind: 'floor', id: current.userData.floorId };
+    current = current.parent;
+  }
+  return undefined;
+}
+
+function closestPointOnPolyline(points: Vec3[], target: Vec3): Vec3 {
+  if (!points.length) return target;
+  if (points.length === 1) return { ...points[0] };
+  let closest = { ...points[0] }; let closestDistanceSquared = Number.POSITIVE_INFINITY;
+  points.slice(1).forEach((end, index) => {
+    const start = points[index]; const dx = end.x - start.x; const dy = end.y - start.y; const dz = end.z - start.z;
+    const lengthSquared = dx * dx + dy * dy + dz * dz || 1;
+    const ratio = Math.max(0, Math.min(1, ((target.x - start.x) * dx + (target.y - start.y) * dy + (target.z - start.z) * dz) / lengthSquared));
+    const point = { x: start.x + dx * ratio, y: start.y + dy * ratio, z: start.z + dz * ratio };
+    const distanceSquared = (target.x - point.x) ** 2 + (target.y - point.y) ** 2 + (target.z - point.z) ** 2;
+    if (distanceSquared < closestDistanceSquared) { closest = point; closestDistanceSquared = distanceSquared; }
+  });
+  return { x: Math.round(closest.x), y: Math.round(closest.y), z: Math.round(closest.z) };
+}
 
 function CameraRig({ command, project, selection, onAzimuth, fastZoom, twoDView }: { command: Props['viewCommand']; project: ProjectSnapshot; selection: Selection | null; onAzimuth: (angle: number) => void; fastZoom: boolean; twoDView: boolean }) {
   const controls = useRef<any>(null);
@@ -186,16 +233,13 @@ function BlueprintPlane({ floor, displayElevationMm }: { floor: ProjectSnapshot[
   </mesh>;
 }
 
-function OpeningPlanMarker({ device, wall, floorElevationMm, label, selected, preview = false, suppressLabel = false, onClick, onLabelClick }: {
+function OpeningPlanMarker({ device, wall, floorElevationMm, selected, preview = false, onClick }: {
   device: Pick<Device, 'position' | 'distanceAlongWallMm' | 'dimensions' | 'wallSide' | 'typeId'>;
   wall: Wall;
   floorElevationMm: number;
-  label: string;
   selected: boolean;
   preview?: boolean;
-  suppressLabel?: boolean;
   onClick?: (event: ThreeEvent<MouseEvent>) => void;
-  onLabelClick?: () => void;
 }) {
   const plan = useMemo(() => openingPlanGeometry(wall, device), [device, wall]);
   const y = mmToM(floorElevationMm + wall.heightMm) + .045;
@@ -204,12 +248,8 @@ function OpeningPlanMarker({ device, wall, floorElevationMm, label, selected, pr
   const lineWidth = selected ? 4 : preview ? 3.5 : 3;
   const dashed = preview || device.typeId === 'window-opening';
   return <group renderOrder={40} onClick={onClick}>
+    <Line points={plan.outline.map(point)} color={color} lineWidth={14} transparent opacity={.002} depthTest={false} depthWrite={false} renderOrder={39} />
     <Line points={plan.outline.map(point)} color={color} lineWidth={lineWidth} dashed={dashed} dashSize={.12} gapSize={.06} depthTest={false} renderOrder={40} />
-    {!suppressLabel && <Html center wrapperClass="opening-plan-overlay" pointerEvents={onLabelClick ? 'auto' : 'none'} position={point(plan.labelPoint)}>
-      {onLabelClick
-        ? <button type="button" className={`opening-plan-label ${device.typeId === 'door-opening' ? 'door' : 'window'}`} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onLabelClick(); }}>{label} · {(device.dimensions.width / 1000).toFixed(2)} m</button>
-        : <span className={`opening-plan-label ${device.typeId === 'door-opening' ? 'door' : 'window'}`}>{label} · {(device.dimensions.width / 1000).toFixed(2)} m</span>}
-    </Html>}
   </group>;
 }
 
@@ -277,7 +317,7 @@ function StaircaseSteps({ device, color, xray, tailOnly = false }: { device: Dev
 }
 
 function SolarPanelGeometry({ device, size, color, xray }: { device: Device; size: [number,number,number]; color: string; xray: boolean }) {
-  const localFloor = -mmToM(device.position.y); const supportHeight = Math.max(.65, size[1]); const panelY = localFloor + supportHeight; const legRadius = Math.max(.035, Math.min(.075, size[0] * .04)); const panelThickness = Math.min(.055, Math.max(.035, size[1] * .05));
+  const localFloor = -mmToM(device.position.y); const supportHeight = Math.max(.3, size[1] * .5); const panelY = localFloor + supportHeight; const legRadius = Math.max(.035, Math.min(.075, size[0] * .04)); const panelThickness = Math.min(.055, Math.max(.035, size[1] * .05));
   return <>
     <mesh position={[0, localFloor + supportHeight / 2, 0]}><cylinderGeometry args={[legRadius, legRadius, supportHeight, 18]} /><meshStandardMaterial color="#718188" roughness={.7} transparent={xray} opacity={xray ? .11 : 1} depthWrite={!xray} /></mesh>
     <mesh position={[0, localFloor + .025, 0]}><cylinderGeometry args={[legRadius * 2.4, legRadius * 2.4, .05, 24]} /><meshStandardMaterial color="#55666d" roughness={.8} transparent={xray} opacity={xray ? .11 : 1} depthWrite={!xray} /></mesh>
@@ -304,14 +344,41 @@ function BlinkingDeviceMarker({ size }: { size: [number, number, number] }) {
   return <group ref={marker}><mesh><boxGeometry args={[size[0] + .09, size[1] + .09, size[2] + .09]} /><meshBasicMaterial color="#ff334c" wireframe transparent opacity={.9} depthTest depthWrite={false} /></mesh></group>;
 }
 
-function WallPrismGeometry(props: WallPrismBoundsMm) {
+function WallPrismGeometry({ includeStartFace = true, includeEndFace = true, ...props }: WallPrismBoundsMm & { includeStartFace?: boolean; includeEndFace?: boolean }) {
   const geometry = useMemo(() => {
     const values = wallPrismVerticesMm(props).map(mmToM);
     const result = new BufferGeometry(); result.setAttribute('position', new Float32BufferAttribute(values, 3));
-    result.setIndex([...WALL_PRISM_TRIANGLE_INDICES]); result.computeVertexNormals(); result.computeBoundingBox(); result.computeBoundingSphere(); return result;
-  }, [props.startNegativeX, props.startPositiveX, props.endNegativeX, props.endPositiveX, props.bottomY, props.topY, props.negativeDepth, props.positiveDepth]);
+    result.setIndex([
+      ...WALL_PRISM_TRIANGLE_INDICES.slice(0, 24),
+      ...(includeStartFace ? WALL_PRISM_TRIANGLE_INDICES.slice(24, 30) : []),
+      ...(includeEndFace ? WALL_PRISM_TRIANGLE_INDICES.slice(30, 36) : [])
+    ]); result.computeVertexNormals(); result.computeBoundingBox(); result.computeBoundingSphere(); return result;
+  }, [includeEndFace, includeStartFace, props.startNegativeX, props.startPositiveX, props.endNegativeX, props.endPositiveX, props.bottomY, props.topY, props.negativeDepth, props.positiveDepth]);
   useEffect(() => () => geometry.dispose(), [geometry]);
   return <primitive object={geometry} attach="geometry" />;
+}
+
+/** Draws only the real reveal perimeter of each opening, never wall-height subdivision seams. */
+function WallOpeningXrayEdges({ wall, devices, totalThicknessMm, color, opacity, renderOrder }: { wall: Wall; devices: Device[]; totalThicknessMm: number; color: string; opacity: number; renderOrder: number }) {
+  const geometry = useMemo(() => {
+    const values: number[] = []; const length = wallLength(wall); const negativeDepth = -totalThicknessMm / 2; const positiveDepth = totalThicknessMm / 2;
+    const add = (a: [number,number,number], b: [number,number,number]) => values.push(...a.map(mmToM), ...b.map(mmToM));
+    devices.filter((device) => !device.hidden && ['door-opening','window-opening'].includes(device.typeId)).forEach((device) => {
+      const center = device.distanceAlongWallMm ?? worldToWallLocal(wall, device.position).distanceAlongMm;
+      const start = Math.max(0, center - device.dimensions.width / 2) - length / 2; const end = Math.min(length, center + device.dimensions.width / 2) - length / 2;
+      const bottom = Math.max(0, device.position.y - device.dimensions.height / 2); const top = Math.min(wall.heightMm, device.position.y + device.dimensions.height / 2);
+      if (end <= start || top <= bottom) return;
+      for (const depth of [negativeDepth, positiveDepth]) {
+        add([start,bottom,depth],[end,bottom,depth]); add([end,bottom,depth],[end,top,depth]);
+        add([end,top,depth],[start,top,depth]); add([start,top,depth],[start,bottom,depth]);
+      }
+      for (const [x,y] of [[start,bottom],[end,bottom],[end,top],[start,top]] as Array<[number,number]>) add([x,y,negativeDepth],[x,y,positiveDepth]);
+    });
+    const result = new BufferGeometry(); result.setAttribute('position', new Float32BufferAttribute(values, 3)); if (values.length > 0) result.computeBoundingSphere(); return result;
+  }, [devices, totalThicknessMm, wall]);
+  useEffect(() => () => geometry.dispose(), [geometry]);
+  if (!geometry.getAttribute('position').count) return null;
+  return <lineSegments geometry={geometry} renderOrder={renderOrder} raycast={() => null}><lineBasicMaterial color={color} transparent opacity={opacity} depthTest depthWrite={false} /></lineSegments>;
 }
 
 const wallProfileOffset = (profile: { negativeDepthMm: number; positiveDepthMm: number }, depthMm: number, halfThicknessMm: number) => {
@@ -332,7 +399,9 @@ export function HouseViewport(props: Props) {
   const [pendingPortDevice, setPendingPortDevice] = useState<{ device: Device; role: RouteEndpointRole; firstPortDirection?: DevicePort['direction']; allowedPortIds?: string[] }>();
   const [pendingPortError, setPendingPortError] = useState<string>();
   const [pendingCreatedPort, setPendingCreatedPort] = useState<{ deviceId: string; portId: string }>();
-  const dragStart = useRef<{ x: number; y: number } | null>(null); const dragged = useRef(false); const suppressClick = useRef(false); const compassRose = useRef<HTMLSpanElement>(null);
+  const [measurementPicker, setMeasurementPicker] = useState<MeasurementPickerState>();
+  const [measurementReferences, setMeasurementReferences] = useState<string[]>([]);
+  const dragStart = useRef<{ x: number; y: number } | null>(null); const dragged = useRef(false); const suppressClick = useRef(false); const compassRose = useRef<HTMLSpanElement>(null); const viewportElement = useRef<HTMLDivElement>(null);
   const floor = props.project.floors.find((item) => item.id === props.activeFloorId) ?? props.project.floors[0];
   const floorRoutingY = floorRouteHeight(props.project.preferences.floorRouteOffsetMm, props.routeKind === 'pipe' || props.routeKind === 'duct' ? props.routeKind : 'cable', props.project.preferences.routeVerticalOrder, props.project.preferences.routeSeparationMm[props.routeService] ?? 30);
   const selectedRoom = props.isolatedRoomId ? props.project.rooms.find((item) => item.id === props.isolatedRoomId) : props.selection?.type === 'room' ? props.project.rooms.find((item) => item.id === props.selection?.ids[0]) : undefined;
@@ -351,7 +420,7 @@ export function HouseViewport(props: Props) {
   const wallPartsMap = useMemo(() => new Map(props.project.walls.map((wall) => [wall.id, wallParts(wall, wallDevices.get(wall.id) ?? [], wallIntersectionCutsMap.get(wall.id) ?? [])])), [props.project.walls, wallDevices, wallIntersectionCutsMap]);
   const wallJoinMap = useMemo(() => new Map(props.project.walls.map((wall) => [wall.id, wallRenderEndProfiles(wall, props.project.walls)])), [props.project.walls]);
   const updateCompassAzimuth = useCallback((angle: number) => {
-    if (compassRose.current) compassRose.current.style.transform = `rotate(${-angle}rad)`;
+    if (compassRose.current) compassRose.current.style.transform = `rotate(${angle}rad)`;
   }, []);
   const roomContains = (point: Vec2, marginMm = 160) => {
     if (!selectedRoom) return false; if (pointInPolygon(point, selectedRoom.boundary)) return true;
@@ -361,7 +430,7 @@ export function HouseViewport(props: Props) {
     if (!selectedRoom) return new Set<string>(); const ids = new Set(selectedRoom.wallIds);
     props.project.walls.filter((wall) => wall.floorId === selectedRoom.floorId).forEach((wall) => { const middle = { x: (wall.start.x + wall.end.x) / 2, z: (wall.start.z + wall.end.z) / 2 }; if (roomContains(wall.start, wall.thicknessMm / 2 + 180) || roomContains(wall.end, wall.thicknessMm / 2 + 180) || roomContains(middle, wall.thicknessMm / 2 + 180)) ids.add(wall.id); }); return ids;
   }, [props.project.walls, selectedRoom]);
-  const clearDraft = () => { setDraft([]); setDraftSurfaces([]); setDraftDeviceIds([]); setDraftPortIds([]); setHover(null); setWallSnapResult(null); setWallLengthDraft(''); setPendingPortDevice(undefined); setPendingCreatedPort(undefined); };
+  const clearDraft = () => { setDraft([]); setDraftSurfaces([]); setDraftDeviceIds([]); setDraftPortIds([]); setHover(null); setWallSnapResult(null); setWallLengthDraft(''); setPendingPortDevice(undefined); setPendingCreatedPort(undefined); setMeasurementPicker(undefined); setMeasurementReferences([]); };
   useEffect(clearDraft, [props.cancelToken, props.tool, props.activeFloorId]);
   useEffect(() => {
     const keyDown = (event: KeyboardEvent) => event.key === 'Shift' && setFastZoom(true); const keyUp = (event: KeyboardEvent) => event.key === 'Shift' && setFastZoom(false); const blur = () => setFastZoom(false);
@@ -403,7 +472,7 @@ export function HouseViewport(props: Props) {
   };
   const eventPoint = (event: ThreeEvent<PointerEvent | MouseEvent>, wallId?: string): Vec3 => {
     let rawPoint = { x: mToMm(event.point.x), y: mToMm(event.point.y) - floor.elevationMm, z: mToMm(event.point.z) };
-    if (props.photoMode) return rawPoint;
+    if (props.photoPlacementActive || props.tool === 'measure') return rawPoint;
     if (wallId && (props.tool === 'device' || props.tool === 'container')) return rawPoint;
     if (wallId && (props.tool === 'wall' || props.tool === 'structure') && !event.nativeEvent.shiftKey) {
       const pointedWall = wallMap.get(wallId);
@@ -418,6 +487,63 @@ export function HouseViewport(props: Props) {
     }
     return props.tool === 'wall' || props.tool === 'room' ? { ...point, y: 0 } : point;
   };
+  const measurementTarget = (identity: { kind: Exclude<MeasurementTargetKind, 'structure'>; id: string }, worldPoint: Vector3): MeasurementTarget | undefined => {
+    const rawPoint = { x: mToMm(worldPoint.x), y: mToMm(worldPoint.y) - floor.elevationMm, z: mToMm(worldPoint.z) };
+    if (identity.kind === 'floor') {
+      const targetFloor = floorMap.get(identity.id); if (!targetFloor) return undefined;
+      return { key: `floor:${targetFloor.id}`, kind: 'floor', id: targetFloor.id, label: targetFloor.name, point: { ...rawPoint, y: targetFloor.elevationMm - floor.elevationMm } };
+    }
+    if (identity.kind === 'wall') {
+      const wall = wallMap.get(identity.id); if (!wall) return undefined;
+      return { key: `wall:${wall.id}`, kind: 'wall', id: wall.id, label: wall.name, point: rawPoint };
+    }
+    if (identity.kind === 'device') {
+      const device = deviceMap.get(identity.id); if (!device) return undefined;
+      const deviceType = deviceTypeMap.get(device.typeId); const kind: MeasurementTargetKind = deviceType?.family === 'structure' ? 'structure' : 'device';
+      return { key: `device:${device.id}`, kind, id: device.id, label: device.name, point: rawPoint };
+    }
+    if (identity.kind === 'route') {
+      const route = props.project.routes.find((item) => item.id === identity.id); const routeFloor = route ? floorMap.get(route.floorId) : undefined;
+      if (!route || !routeFloor) return undefined;
+      const routeWalls = route.wallIds.map((id) => wallMap.get(id)).filter((wall): wall is Wall => !!wall);
+      const points = roundedRoutePoints(route.points, props.project.preferences.routeBendRadiusMm[route.serviceCategory] ?? 100, routeWalls)
+        .map((point) => ({ ...point, y: point.y + routeFloor.elevationMm - floor.elevationMm }));
+      return { key: `route:${route.id}`, kind: 'route', id: route.id, label: route.name, point: closestPointOnPolyline(points, rawPoint) };
+    }
+    if (identity.kind === 'room') {
+      const room = props.project.rooms.find((item) => item.id === identity.id); const roomFloor = room ? floorMap.get(room.floorId) : undefined;
+      if (!room || !roomFloor) return undefined;
+      return { key: `room:${room.id}`, kind: 'room', id: room.id, label: room.name, point: { ...rawPoint, y: roomFloor.elevationMm - floor.elevationMm } };
+    }
+    const measurement = props.project.measurements.find((item) => item.id === identity.id); if (!measurement) return undefined;
+    const measurementWall = measurement.wallId ? wallMap.get(measurement.wallId) : undefined; const measurementFloor = measurementWall ? floorMap.get(measurementWall.floorId) : floor;
+    const elevationDelta = (measurementFloor?.elevationMm ?? floor.elevationMm) - floor.elevationMm;
+    const point = closestPointOnPolyline([{ ...measurement.start, y: measurement.start.y + elevationDelta }, { ...measurement.end, y: measurement.end.y + elevationDelta }], rawPoint);
+    return { key: `measurement:${measurement.id}`, kind: 'measurement', id: measurement.id, label: measurement.name, point };
+  };
+  const openMeasurementPicker = (event: ThreeEvent<MouseEvent | PointerEvent>, fallback?: { kind: Exclude<MeasurementTargetKind, 'structure'>; id: string }) => {
+    event.stopPropagation();
+    const targets: MeasurementTarget[] = []; const seen = new Set<string>();
+    const append = (identity: { kind: Exclude<MeasurementTargetKind, 'structure'>; id: string } | undefined, point: Vector3) => {
+      if (!identity) return; const target = measurementTarget(identity, point); if (!target || seen.has(target.key)) return;
+      seen.add(target.key); targets.push(target);
+    };
+    event.intersections.forEach((intersection) => append(sceneMeasurementIdentity(intersection.object), intersection.point));
+    append(fallback, event.point);
+    if (!targets.length) { props.onNotice(t('No measurable surface was found here.')); return; }
+    const bounds = viewportElement.current?.getBoundingClientRect(); const clientX = event.nativeEvent.clientX; const clientY = event.nativeEvent.clientY;
+    const localX = bounds ? clientX - bounds.left : clientX; const localY = bounds ? clientY - bounds.top : clientY;
+    const width = bounds?.width ?? window.innerWidth; const height = bounds?.height ?? window.innerHeight;
+    setMeasurementPicker({ left: Math.max(8, Math.min(localX + 12, width - 274)), top: Math.max(8, Math.min(localY + 12, height - 248)), targets: targets.slice(0, 8) });
+  };
+  const chooseMeasurementTarget = (target: MeasurementTarget) => {
+    if (!draft.length) {
+      setDraft([target.point]); setHover(target.point); setMeasurementReferences(target.id ? [target.id] : []); setMeasurementPicker(undefined);
+      props.onNotice(t('Point A set on {target}. Choose point B.', { target: target.label })); return;
+    }
+    const references = [...new Set([...measurementReferences, ...(target.id ? [target.id] : [])])];
+    props.onCreateMeasurement(draft[0], target.point, references); clearDraft();
+  };
   const pointedWallSide = (event: ThreeEvent<MouseEvent>, wallId?: string): Device['wallSide'] | undefined => {
     const wall = wallId ? props.project.walls.find((item) => item.id === wallId) : undefined; if (!wall) return undefined;
     const localFaceDepth = event.face?.normal.z ?? 0; if (localFaceDepth > .5) return 'left'; if (localFaceDepth < -.5) return 'right';
@@ -429,8 +555,9 @@ export function HouseViewport(props: Props) {
   };
   const clickScene = (event: ThreeEvent<MouseEvent>, wallId?: string) => {
     event.stopPropagation(); if (shouldIgnoreClick()) return;
+    if (props.tool === 'measure') { openMeasurementPicker(event, wallId ? { kind: 'wall', id: wallId } : { kind: 'floor', id: floor.id }); return; }
     const point = eventPoint(event, wallId);
-    if (props.photoMode) { if (props.photoPlacementActive) props.onPlacePhotoMarker?.(point); return; }
+    if (props.photoPlacementActive) { props.onPlacePhotoMarker?.(point); return; }
     if (props.tool === 'select') { props.onSelect(null); return; }
     if (props.tool === 'structure' && props.placementType?.id === 'staircase') {
       if (!draft.length) { setDraft([point]); props.onNotice('Staircase start set. Ctrl-click intermediate corners, then click the final point without Ctrl.'); }
@@ -447,7 +574,6 @@ export function HouseViewport(props: Props) {
       if (!draft.length) { props.onNotice('Start the route by clicking its source device.'); return; }
       addRoutePoint(wallId ? point : { ...point, y: floorRoutingY }, wallId ?? 'floor');
     }
-    else if (props.tool === 'measure') { if (!draft.length) setDraft([point]); else { const end = ['height','vertical'].includes(props.measurementType) ? { x: draft[0].x, y: point.y, z: draft[0].z } : point; props.onCreateMeasurement(draft[0], end, props.measurementType); clearDraft(); } }
   };
   const adaptConcealedRoute = (requestedPoints: Vec3[], requestedSurfaces: RouteSurface[], sourceDeviceId?: string, destinationDeviceId?: string, sourcePortId?: string, destinationPortId?: string) => {
     let points: Vec3[] = [requestedPoints[0]]; let surfaces: RouteSurface[] = [requestedSurfaces[0]];
@@ -458,15 +584,8 @@ export function HouseViewport(props: Props) {
     const pushWallSegment = (start: Vec3, end: Vec3, wallId: string) => { const wall = props.project.walls.find((item) => item.id === wallId); if (!wall) return; routeSegmentDetourDevices(wall, start, end, props.project.devices, 100, excludedDeviceIds, terminalPoints).slice(1).forEach((point) => push(point, wallId)); };
     const ceilingY = Math.max(0, ceilingRouteHeight(floor.ceilingHeightMm, props.project.preferences.ceilingRouteOffsetMm));
     const pushPlaneSegment = (start: Vec3, end: Vec3, surface: 'floor' | 'ceiling', y: number) => {
-      const currentTier = props.project.preferences.routeOverlapPriorities[props.routeService] ?? 4;
-      const existing = props.project.routes.filter((route) => route.floorId === floor.id).flatMap((route) => {
-        const otherTier = props.project.preferences.routeOverlapPriorities[route.serviceCategory] ?? 4;
-        const sharesDestination = !!destinationDeviceId && [route.sourceDeviceId, route.destinationDeviceId].includes(destinationDeviceId);
-        const weight = props.project.preferences.preferSharedCorridors && sharesDestination ? -.9 : props.project.preferences.avoidRouteOverlaps ? (5 - currentTier) * (5 - otherTier) : 0;
-        return weight ? route.points.slice(1).map((point, index) => ({ start: route.points[index], end: point, weight })) : [];
-      });
       const obstacles = clearanceDevices.map((device) => devicePlanObstacle(device, y, 100)).filter((item): item is NonNullable<typeof item> => !!item);
-      preferredOrthogonalPlaneRoute(start, end, y, existing, obstacles, props.project.preferences.routeTurnPenaltyMm).forEach((point) => push(point, surface));
+      preferredDirectPlaneRoute(start, end, y, obstacles, props.project.preferences.routeTurnPenaltyMm).forEach((point) => push(point, surface));
     };
     const pushFloorSegment = (start: Vec3, end: Vec3) => pushPlaneSegment(start, end, 'floor', floorRoutingY);
     const activeWalls = props.project.walls.filter((wall) => wall.floorId === floor.id);
@@ -557,6 +676,12 @@ export function HouseViewport(props: Props) {
       else { points = points.slice(0, anchorIndex).concat(lead); surfaces = surfaces.slice(0, anchorIndex).concat(Array.from({ length: lead.length }, () => surface)); }
     };
     protectTerminal(sourceDeviceId, sourcePortId, true); protectTerminal(destinationDeviceId, destinationPortId, false);
+    if (props.routeKind === 'pipe' || props.routeKind === 'duct') {
+      const sourcePort = props.project.devices.find((device) => device.id === sourceDeviceId)?.ports.find((port) => port.id === sourcePortId);
+      const destinationPort = props.project.devices.find((device) => device.id === destinationDeviceId)?.ports.find((port) => port.id === destinationPortId);
+      const reverseFlow = routeFlowFromEndpointPorts(sourcePort, destinationPort) === 'destination-to-source';
+      points = gradeRoutePlaneSurfaces(points, surfaces, props.routeKind, props.project.preferences.routeGravitySlopePermille[props.routeKind] ?? 0, reverseFlow, routeSurfaceBounds(props.project.floors, floor.id), props.project.preferences.routeDiameterMm[props.routeService] ?? 20, props.project.walls.filter((wall) => wall.floorId === floor.id));
+    }
     return { points, surfaces };
   };
   const routeValidationError = (surfaces: RouteSurface[], points: Vec3[]) => {
@@ -609,7 +734,7 @@ export function HouseViewport(props: Props) {
   };
   const completePortSelection = (device: Device, port: DevicePort) => {
     const type = props.project.deviceTypes.find((item) => item.id === device.typeId);
-    const rawEndpoint = devicePortWorldPosition(device, port); const deviceFloor = props.project.floors.find((item) => item.id === device.floorId); const endpoint = { ...rawEndpoint, y: rawEndpoint.y + (deviceFloor?.elevationMm ?? floor.elevationMm) - floor.elevationMm };
+    const rawEndpoint = deviceRouteEndpointWorldPosition(device, port); const deviceFloor = props.project.floors.find((item) => item.id === device.floorId); const endpoint = { ...rawEndpoint, y: rawEndpoint.y + (deviceFloor?.elevationMm ?? floor.elevationMm) - floor.elevationMm };
     const surface: RouteSurface = type?.family === 'transition' ? 'shaft' : device.wallId ?? (device.associationType === 'ceiling' ? 'ceiling' : device.associationType === 'floor' ? 'floor' : 'terminal');
     if (!draft.length) { setPendingPortError(undefined); setPendingPortDevice(undefined); addRoutePoint(endpoint, surface, device.id, port.id); props.onNotice(`Route started at ${device.name} · ${port.name}. Add control points, then click the destination device.`); return; }
     setPendingPortError(undefined);
@@ -629,8 +754,8 @@ export function HouseViewport(props: Props) {
   }, [pendingCreatedPort, props.project.devices]);
   const handleDeviceClick = (event: ThreeEvent<MouseEvent>, device: Device) => {
     if (shouldIgnoreClick()) { event.stopPropagation(); return; }
-    if (props.photoMode) { event.stopPropagation(); if (props.photoPlacementActive) props.onPlacePhotoMarker?.(eventPoint(event, device.wallId)); return; }
-    if (props.tool === 'measure') { event.stopPropagation(); const endpoint = { ...device.position }; props.onCreateMeasurement({ x: endpoint.x, y: 0, z: endpoint.z }, endpoint, 'height', [device.id]); return; }
+    if (props.photoPlacementActive) { event.stopPropagation(); props.onPlacePhotoMarker?.(eventPoint(event, device.wallId)); return; }
+    if (props.tool === 'measure') { openMeasurementPicker(event, { kind: 'device', id: device.id }); return; }
     if (props.tool === 'route') {
       event.stopPropagation();
       if (props.routeKind === 'junction') { props.onNotice('Click a route segment to split it, or click a wall/floor for a standalone junction.'); return; }
@@ -674,25 +799,25 @@ export function HouseViewport(props: Props) {
     const displayFragments = fragments.map((fragment) => fragment.map((point) => [mmToM(point.x), mmToM(routeFloor.elevationMm + point.y) + (point.y === 0 ? .018 : 0), mmToM(point.z)] as [number, number, number]));
     return [{ route, displayFragments }];
   }), [floor.id, floorMap, props.project.preferences.routeBendRadiusMm, props.project.routes, props.showAllFloors, props.suppressRoutes, props.viewMode, props.visibleRouteIds, props.visibleServices, selectedRoom, selectedWallId, wallMap]);
-  const drawingHover = typedWallEnd ?? (props.tool === 'measure' && hover && draft[0] && ['height','vertical'].includes(props.measurementType) ? { x: draft[0].x, y: hover.y, z: draft[0].z } : hover);
+  const drawingHover = typedWallEnd ?? hover;
   const wallSnapLabel = wallSnapResult?.kind === 'corner' ? t('Corner snap') : wallSnapResult?.kind === 'wall' ? t('Wall snap') : wallSnapResult?.kind === 'grid' ? t('Grid snap') : wallSnapResult?.kind === 'perpendicular' ? t('Perpendicular 90°') : wallSnapResult?.kind === 'cardinal' ? (Math.abs(wallSnapResult.guideDirection?.x ?? 0) > .8 ? t('East / West axis') : t('North / South axis')) : undefined;
   const animateRouteDirection = xray && !props.suppressRouteMotion && props.project.preferences.motionMode === 'animated';
   const animateLightingSelection = !!props.blinkingDeviceIds?.size;
 
-  return <div className={`viewport${props.tool !== 'select' ? ' viewport-creation-tool' : ''}`} aria-label="3D house infrastructure viewport"
+  return <div ref={viewportElement} className={`viewport${props.tool !== 'select' && props.tool !== 'measure' ? ' viewport-creation-tool' : ''}`} aria-label="3D house infrastructure viewport"
     onWheelCapture={(event) => setFastZoom(event.shiftKey)}
     onPointerDownCapture={(event) => { if (event.button === 0) { dragStart.current = { x: event.clientX, y: event.clientY }; dragged.current = false; } }}
     onPointerMoveCapture={(event) => { if (dragStart.current && Math.hypot(event.clientX - dragStart.current.x, event.clientY - dragStart.current.y) > 6) dragged.current = true; }}
     onPointerUpCapture={() => { if (dragged.current) { suppressClick.current = true; window.setTimeout(() => { suppressClick.current = false; }, 80); } dragStart.current = null; }}
     onPointerLeave={(event) => { const bounds = event.currentTarget.getBoundingClientRect(); if (event.clientX > bounds.left && event.clientX < bounds.right && event.clientY > bounds.top && event.clientY < bounds.bottom) return; dragStart.current = null; setHover(null); setWallSnapResult(null); }}>
-    <Canvas frameloop={animateRouteDirection || animateLightingSelection ? 'always' : 'demand'} shadows={false} gl={{ antialias: true, preserveDrawingBuffer: true }} onPointerMissed={() => props.tool === 'select' && props.onSelect(null)}>
+    <Canvas dpr={props.snapshotMode ? props.snapshotPixelRatio ?? 5 : [1, 2]} frameloop={animateRouteDirection || animateLightingSelection ? 'always' : 'demand'} shadows={false} gl={{ antialias: true, preserveDrawingBuffer: true }} onPointerMissed={() => props.tool === 'select' && props.onSelect(null)}>
       {props.projection === 'perspective' ? <PerspectiveCamera makeDefault position={[10, 8, 10]} fov={48} near={.05} far={500} /> : <OrthographicCamera makeDefault position={[10, 10, 10]} zoom={60} near={-500} far={500} />}
       <color attach="background" args={[lightScene ? '#f7f8f5' : '#151b1f']} /><ambientLight intensity={lightScene ? 2.5 : xray ? 2.4 : 1.8} /><directionalLight position={[8, 14, 7]} intensity={lightScene ? 1.1 : 1.6} />
       <CameraRig command={props.viewCommand} project={props.project} selection={props.selection} onAzimuth={updateCompassAzimuth} fastZoom={fastZoom} twoDView={props.projection === 'orthographic'} />
-      <Grid position={[0, mmToM(floor.elevationMm) + .004, 0]} args={[60, 60]} cellSize={.5} sectionSize={1} cellThickness={.35} sectionThickness={.8}
-        cellColor={lightScene ? '#d8ddda' : '#354147'} sectionColor={lightScene ? '#aab5b0' : '#5a6870'} fadeDistance={38} fadeStrength={1.8} infiniteGrid={false} />
+      <Grid position={[0, mmToM(floor.elevationMm) + .004, 0]} args={[60, 60]} cellSize={.5} sectionSize={1} cellThickness={props.snapshotMode ? .2 : .35} sectionThickness={props.snapshotMode ? .42 : .8}
+        cellColor={props.snapshotMode ? '#e5e9e6' : lightScene ? '#d8ddda' : '#354147'} sectionColor={props.snapshotMode ? '#cfd6d2' : lightScene ? '#aab5b0' : '#5a6870'} fadeDistance={props.snapshotMode ? 32 : 38} fadeStrength={props.snapshotMode ? 2.2 : 1.8} infiniteGrid={false} />
       {floor.blueprint?.visible && <BlueprintPlane floor={floor} displayElevationMm={floor.elevationMm} />}
-      {(props.tool !== 'select' || props.photoMode && props.photoPlacementActive) && <mesh position={[0, mmToM(floor.elevationMm) - .012, 0]} rotation={[-Math.PI / 2, 0, 0]} onClick={clickScene} onDoubleClick={finishMultiPoint}
+      {(props.tool !== 'select' || props.photoPlacementActive) && <mesh userData={{ floorId: floor.id }} position={[0, mmToM(floor.elevationMm) - .012, 0]} rotation={[-Math.PI / 2, 0, 0]} onClick={clickScene} onDoubleClick={finishMultiPoint}
         onPointerMove={(event) => { const point = eventPoint(event); setHover(point); props.onStatus(point); }}>
         <planeGeometry args={[200, 200]} /><meshBasicMaterial transparent opacity={0} depthWrite={false} />
       </mesh>}
@@ -705,7 +830,7 @@ export function HouseViewport(props: Props) {
 
       {props.project.walls.filter((wall) => floorVisible(wall.floorId) && !wall.hidden && wallVisible(wall.id)).map((wall, wallIndex) => {
         const wallFloor = floorMap.get(wall.floorId)!; const length = wallLength(wall); const angle = -Math.atan2(wall.end.z - wall.start.z, wall.end.x - wall.start.x);
-        const selected = props.selection?.type === 'wall' && props.selection.ids.includes(wall.id); const joins = wallJoinMap.get(wall.id) ?? { start: { negativeDepthMm: 0, positiveDepthMm: 0, kind: 'square' as const }, end: { negativeDepthMm: 0, positiveDepthMm: 0, kind: 'square' as const } }; const parts = wallPartsMap.get(wall.id)!;
+        const selected = props.selection?.type === 'wall' && props.selection.ids.includes(wall.id); const joins = wallJoinMap.get(wall.id) ?? { start: { negativeDepthMm: 0, positiveDepthMm: 0, kind: 'square' as const }, end: { negativeDepthMm: 0, positiveDepthMm: 0, kind: 'square' as const } }; const parts = wallPartsMap.get(wall.id)!; const wholeWallPart = wallRenderPart(0, length, 0, wall.heightMm); const openingDevices = wallDevices.get(wall.id) ?? [];
         const total = wall.structuralThicknessMm + wall.liningLeftMm + wall.liningRightMm;
         const layers = [
           { id: 'core', thickness: wall.structuralThicknessMm, depth: (wall.liningLeftMm - wall.liningRightMm) / 2, color: '#b8bfbd' },
@@ -720,18 +845,51 @@ export function HouseViewport(props: Props) {
           bottomY: part.centerY - part.height / 2, topY: part.centerY + part.height / 2, negativeDepth, positiveDepth
         });
         const xrayOpacity = selected ? .13 : .055;
-        const handleWallClick = (event: ThreeEvent<MouseEvent | PointerEvent>) => { if (shouldIgnoreClick()) { event.stopPropagation(); return; } if (props.photoMode) return clickScene(event as ThreeEvent<MouseEvent>, wall.id); if (props.tool !== 'select' && wall.floorId !== floor.id) { event.stopPropagation(); props.onNotice(`Switch to ${wallFloor.name} before creating objects on that level.`); return; } if (props.tool === 'route' || props.tool === 'measure') { const deviceId = event.intersections.find((hit) => typeof hit.object.userData.deviceId === 'string')?.object.userData.deviceId as string | undefined; const device = props.project.devices.find((item) => item.id === deviceId); if (device) return handleDeviceClick(event as ThreeEvent<MouseEvent>, device); return clickScene(event as ThreeEvent<MouseEvent>, wall.id); } if (props.tool === 'device' || props.tool === 'container' || props.tool === 'structure' || props.tool === 'wall' || props.tool === 'room') return clickScene(event as ThreeEvent<MouseEvent>, wall.id); if (xray) { props.onSelect(null); return; } event.stopPropagation(); props.onSelect({ type: 'wall', ids: [wall.id] }, event.nativeEvent.ctrlKey || event.nativeEvent.metaKey); };
-        return <group key={wall.id} position={[mmToM((wall.start.x + wall.end.x) / 2), mmToM(wallFloor.elevationMm), mmToM((wall.start.z + wall.end.z) / 2)]} rotation={[0, angle, 0]}
-          onClick={props.photoMode || props.tool !== 'select' ? handleWallClick : undefined}
-          onPointerMove={props.tool === 'wall' || props.tool === 'structure' ? (event) => { event.stopPropagation(); const point = eventPoint(event, wall.id); setHover(point); props.onStatus(point); } : undefined}
+        const handleWallClick = (event: ThreeEvent<MouseEvent | PointerEvent>) => {
+          if (shouldIgnoreClick()) { event.stopPropagation(); return; }
+          if (props.photoPlacementActive) return clickScene(event as ThreeEvent<MouseEvent>, wall.id);
+          if (props.tool !== 'select' && wall.floorId !== floor.id) { event.stopPropagation(); props.onNotice(`Switch to ${wallFloor.name} before creating objects on that level.`); return; }
+          if (props.tool === 'measure') { openMeasurementPicker(event, { kind: 'wall', id: wall.id }); return; }
+          if (props.tool === 'route') {
+            const deviceId = event.intersections.map((hit) => sceneMeasurementIdentity(hit.object)).find((identity) => identity?.kind === 'device')?.id;
+            const device = props.project.devices.find((item) => item.id === deviceId);
+            if (device) return handleDeviceClick(event as ThreeEvent<MouseEvent>, device);
+            return clickScene(event as ThreeEvent<MouseEvent>, wall.id);
+          }
+          if (props.tool === 'device' || props.tool === 'container' || props.tool === 'structure' || props.tool === 'wall' || props.tool === 'room') return clickScene(event as ThreeEvent<MouseEvent>, wall.id);
+          if (xray) {
+            const technicalIdentity = event.intersections.map((hit) => sceneMeasurementIdentity(hit.object)).find((identity) => {
+              if (identity?.kind === 'route') return true;
+              if (identity?.kind !== 'device') return false;
+              return props.project.devices.find((item) => item.id === identity.id)?.serviceCategory !== 'structural';
+            });
+            if (technicalIdentity?.kind === 'route') {
+              event.stopPropagation();
+              props.onSelect({ type: 'route', ids: [technicalIdentity.id] }, event.nativeEvent.ctrlKey || event.nativeEvent.metaKey);
+              return;
+            }
+            if (technicalIdentity?.kind === 'device') {
+              const device = props.project.devices.find((item) => item.id === technicalIdentity.id);
+              if (device) return handleDeviceClick(event as ThreeEvent<MouseEvent>, device);
+            }
+          }
+          event.stopPropagation();
+          props.onSelect({ type: 'wall', ids: [wall.id] }, event.nativeEvent.ctrlKey || event.nativeEvent.metaKey);
+        };
+        return <group key={wall.id} userData={{ wallId: wall.id }} position={[mmToM((wall.start.x + wall.end.x) / 2), mmToM(wallFloor.elevationMm), mmToM((wall.start.z + wall.end.z) / 2)]} rotation={[0, angle, 0]}
+          onClick={props.photoPlacementActive || props.tool !== 'select' || xray ? handleWallClick : undefined}
+          onPointerMove={props.tool === 'wall' || props.tool === 'structure' || props.tool === 'measure' ? (event) => { event.stopPropagation(); const point = eventPoint(event, wall.id); setHover(point); props.onStatus(point); } : undefined}
           onDoubleClick={(event) => (props.tool === 'route' || props.tool === 'room') && finishMultiPoint(event, wall.id)}>
           {xray
-            ? parts.map((part, index) => <mesh key={`xray-${index}`} renderOrder={-1000 + wallIndex} raycast={props.tool === 'select' && !props.photoMode ? () => null : undefined} onClick={props.photoMode || props.tool !== 'select' ? handleWallClick : undefined}>
-              <WallPrismGeometry {...prism(part, -total / 2, total / 2)} />
+            ? <>{parts.map((part, index) => <mesh key={`xray-${index}`} renderOrder={-1000 + wallIndex} onClick={props.photoPlacementActive || props.tool !== 'select' ? handleWallClick : undefined}>
+              <WallPrismGeometry {...prism(part, -total / 2, total / 2)} includeStartFace={part.start <= 0} includeEndFace={part.end >= length} />
               <meshBasicMaterial color={selected ? '#4ce1a1' : '#9eabb1'} transparent opacity={xrayOpacity} depthWrite={false} />
-              <Edges color={selected ? '#4ce1a1' : '#91a1a8'} threshold={15} transparent opacity={selected ? .65 : .28} depthTest={false} renderOrder={1000 + wallIndex} />
-            </mesh>)
-            : parts.flatMap((part, index) => layers.map((layer) => <mesh key={`${index}-${layer.id}`} onClick={props.photoMode || props.tool !== 'select' ? handleWallClick : undefined}>
+            </mesh>)}<mesh renderOrder={1000 + wallIndex} raycast={() => null}>
+              <WallPrismGeometry {...prism(wholeWallPart, -total / 2, total / 2)} />
+              <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+              <Edges color={selected ? '#4ce1a1' : '#91a1a8'} threshold={15} transparent opacity={selected ? .65 : .28} depthTest renderOrder={1000 + wallIndex} />
+            </mesh><WallOpeningXrayEdges wall={wall} devices={openingDevices} totalThicknessMm={total} color={selected ? '#4ce1a1' : '#91a1a8'} opacity={selected ? .65 : .38} renderOrder={1001 + wallIndex} /></>
+            : parts.flatMap((part, index) => layers.map((layer) => <mesh key={`${index}-${layer.id}`} onClick={props.photoPlacementActive || props.tool !== 'select' ? handleWallClick : undefined}>
               <WallPrismGeometry {...prism(part, layer.negativeDepth, layer.positiveDepth)} />
               <meshStandardMaterial color={selected ? '#4ce1a1' : layer.color} roughness={.95} flatShading />
             </mesh>))}
@@ -749,8 +907,8 @@ export function HouseViewport(props: Props) {
       {!props.lightingMode && props.project.rooms.filter((room) => floorVisible(room.floorId) && !room.hidden && (props.tool === 'room' || props.selection?.ids.includes(room.id))).map((room) => {
         const roomFloor = floorMap.get(room.floorId)!; const points = [...room.boundary, room.boundary[0]].map((point) => [mmToM(point.x), mmToM(roomFloor.elevationMm) + .03, mmToM(point.z)] as [number, number, number]);
         const centerX = room.boundary.reduce((sum, point) => sum + point.x, 0) / room.boundary.length; const centerZ = room.boundary.reduce((sum, point) => sum + point.z, 0) / room.boundary.length;
-        return <group key={room.id} onClick={(event) => { if (shouldIgnoreClick()) return; if (props.tool === 'route') { event.stopPropagation(); props.onNotice('Route creation selects device endpoints only.'); return; } event.stopPropagation(); props.onSelect({ type: 'room', ids: [room.id] }, event.nativeEvent.ctrlKey); }}>
-          <Line points={points} color="#4ce1a1" lineWidth={2} dashed dashSize={.15} gapSize={.08} /><Html center position={[mmToM(centerX), mmToM(roomFloor.elevationMm) + .08, mmToM(centerZ)]}><button className="room-chip" onClick={() => props.onSelect({ type: 'room', ids: [room.id] })}>{room.name}</button></Html>
+        return <group key={room.id} userData={{ roomId: room.id }} onClick={(event) => { if (shouldIgnoreClick()) return; if (props.tool === 'measure') { openMeasurementPicker(event, { kind: 'room', id: room.id }); return; } if (props.tool === 'route') { event.stopPropagation(); props.onNotice('Route creation selects device endpoints only.'); return; } event.stopPropagation(); props.onSelect({ type: 'room', ids: [room.id] }, event.nativeEvent.ctrlKey); }}>
+          <Line points={points} color="#4ce1a1" lineWidth={2} dashed dashSize={.15} gapSize={.08} /><Html center position={[mmToM(centerX), mmToM(roomFloor.elevationMm) + .08, mmToM(centerZ)]}><button className="room-chip" onClick={() => props.onSelect({ type: 'room', ids: [room.id] })}><strong>{room.name}</strong><small>{(room.areaMm2 / 1_000_000).toFixed(1)} m²</small></button></Html>
         </group>;
       })}
 
@@ -762,7 +920,7 @@ export function HouseViewport(props: Props) {
         const wallLikeStructure = ['door-opening', 'window-opening', 'column', 'staircase'].includes(device.typeId); const structuralXray = xray && device.serviceCategory === 'structural';
         const sharedFloorAccess = type?.family === 'transition' && device.floorId !== floor.id && !!device.accessibleFloorIds?.includes(floor.id); const sharedAccessLocalY = mmToM(floor.elevationMm - deviceFloor.elevationMm - device.position.y) + .025; const staircaseTailOnly = shape === 'staircase' && !props.showAllFloors && device.floorId !== floor.id && !!device.accessibleFloorIds?.includes(floor.id);
         return <group key={device.id} userData={{ deviceId: device.id, technicalDevice: device.serviceCategory !== 'structural' }} position={[mmToM(device.position.x), mmToM(deviceFloor.elevationMm + device.position.y), mmToM(device.position.z)]}
-          rotation={[device.rotationDeg.x * Math.PI / 180, device.rotationDeg.y * Math.PI / 180, device.rotationDeg.z * Math.PI / 180]} onClick={(event) => handleDeviceClick(event, device)}>
+          rotation={[device.rotationDeg.x * Math.PI / 180, device.rotationDeg.y * Math.PI / 180, device.rotationDeg.z * Math.PI / 180]} onClick={(event) => handleDeviceClick(event, device)} onPointerMove={props.tool === 'measure' ? (event) => { event.stopPropagation(); const point = eventPoint(event); setHover(point); props.onStatus(point); } : undefined}>
           {type?.family === 'transition' ? <FloorTransitionGeometry device={device} size={size} color={color} xray={xray} project={props.project} /> : device.typeId === 'rack' && device.rackConfiguration ? <RackModel3D configuration={device.rackConfiguration} size={size} xray={false} /> : shape === 'staircase' ? <StaircaseSteps device={device} color={color} xray={structuralXray} tailOnly={staircaseTailOnly} /> : shape === 'solar-panel' ? <SolarPanelGeometry device={device} size={size} color={color} xray={xray} /> : device.typeId === 'junction-box' ? <JunctionBox3D size={size} color={color} selected={selected} /> : <mesh userData={{ deviceId: device.id, technicalDevice: device.serviceCategory !== 'structural' }} renderOrder={0} raycast={structuralXray && props.tool === 'select' ? () => null : undefined}>
             {shape === 'cylinder' ? <cylinderGeometry args={[size[0] / 2, size[0] / 2, size[1], 20]} /> : shape === 'junction' ? <dodecahedronGeometry args={[Math.max(size[0], size[1], size[2]) * .42, 0]} /> : <boxGeometry args={size} />}
             {structuralXray ? <meshBasicMaterial color="#9eabb1" transparent opacity={.055} depthTest depthWrite={false} /> : <meshStandardMaterial color={color} wireframe={opening} transparent={opening} opacity={opening ? selected ? .75 : .12 : 1} depthTest emissive={selected || xray ? color : '#000000'} emissiveIntensity={selected ? .35 : xray ? .18 : 0} />}
@@ -784,9 +942,7 @@ export function HouseViewport(props: Props) {
         if (!hostWall || !deviceFloor || !wallVisible(hostWall.id)) return null;
         const selected = props.selection?.type === 'device' && props.selection.ids.includes(device.id);
         return <OpeningPlanMarker key={`opening-plan-${device.id}`} device={device} wall={hostWall} floorElevationMm={deviceFloor.elevationMm}
-          label={t(device.typeId === 'door-opening' ? 'Door' : 'Window')} selected={selected} suppressLabel={props.suppressSceneLabels}
-          onClick={props.tool === 'select' && !xray ? (event) => handleDeviceClick(event, device) : undefined}
-          onLabelClick={props.tool === 'select' && !xray ? () => props.onSelect({ type: 'device', ids: [device.id] }) : undefined} />;
+          selected={selected} onClick={props.tool === 'select' && !xray ? (event) => handleDeviceClick(event, device) : undefined} />;
       })}
 
       {visibleRoutes.map(({ route, displayFragments }) => {
@@ -803,8 +959,8 @@ export function HouseViewport(props: Props) {
           const port = device?.ports.find((item) => item.id === portId);
           return port ? categoryMap.get(port.serviceCategory)?.color ?? routeColor : routeColor;
         };
-        const handleRouteClick = (event: ThreeEvent<MouseEvent>) => { if (shouldIgnoreClick()) return; if (props.photoMode) { event.stopPropagation(); if (props.photoPlacementActive) props.onPlacePhotoMarker?.(eventPoint(event)); return; } if (props.tool === 'route') { event.stopPropagation(); if (props.routeKind === 'junction') props.onCreateRouteJunction(eventPoint(event), route.id); else props.onNotice('Route creation selects device endpoints only. Existing routes are not selectable.'); return; } if (!xray) { props.onSelect(null); return; } event.stopPropagation(); props.onSelect({ type: 'route', ids: [route.id] }, event.nativeEvent.ctrlKey); };
-        return <group key={route.id} renderOrder={0} onClick={handleRouteClick}>
+        const handleRouteClick = (event: ThreeEvent<MouseEvent>) => { if (shouldIgnoreClick()) return; if (props.photoPlacementActive) { event.stopPropagation(); props.onPlacePhotoMarker?.(eventPoint(event)); return; } if (props.tool === 'measure') { openMeasurementPicker(event, { kind: 'route', id: route.id }); return; } if (props.tool === 'route') { event.stopPropagation(); if (props.routeKind === 'junction') props.onCreateRouteJunction(eventPoint(event), route.id); else props.onNotice('Route creation selects device endpoints only. Existing routes are not selectable.'); return; } if (!xray) { props.onSelect(null); return; } event.stopPropagation(); props.onSelect({ type: 'route', ids: [route.id] }, event.nativeEvent.ctrlKey); };
+        return <group key={route.id} userData={{ routeId: route.id }} renderOrder={0} onClick={handleRouteClick} onPointerMove={props.tool === 'measure' ? (event) => { event.stopPropagation(); const point = eventPoint(event); setHover(point); props.onStatus(point); } : undefined}>
           {displayFragments.map((points, fragmentIndex) => <group key={`${route.id}-fragment-${fragmentIndex}`}>
             {xray && <RouteHitTargets points={points} onClick={handleRouteClick} />}
             {volumetric
@@ -817,13 +973,13 @@ export function HouseViewport(props: Props) {
         </group>;
       })}
 
-      {!props.photoMode && !props.lightingMode && props.project.measurements.filter((item) => item.visible).map((measurement) => {
+      {!props.lightingMode && props.project.measurements.filter((item) => item.visible).map((measurement) => {
         const measurementWall = measurement.wallId ? wallMap.get(measurement.wallId) : undefined; const measurementFloor = measurementWall ? floorMap.get(measurementWall.floorId) ?? floor : floor;
         if (!floorVisible(measurementFloor.id)) return null; const start: [number, number, number] = [mmToM(measurement.start.x), mmToM(measurementFloor.elevationMm + measurement.start.y) + .03, mmToM(measurement.start.z)]; const end: [number, number, number] = [mmToM(measurement.end.x), mmToM(measurementFloor.elevationMm + measurement.end.y) + .03, mmToM(measurement.end.z)];
         const middle: [number, number, number] = [(start[0] + end[0]) / 2, (start[1] + end[1]) / 2 + .08, (start[2] + end[2]) / 2]; const selected = props.selection?.type === 'measurement' && props.selection.ids.includes(measurement.id); const selectMeasurement = () => props.onSelect({ type: 'measurement', ids: [measurement.id] });
-        return <group key={measurement.id} onClick={(event) => { if (shouldIgnoreClick()) return; event.stopPropagation(); if (props.tool === 'route') { props.onNotice('Route creation selects device endpoints only.'); return; } selectMeasurement(); }}><Line points={[start, end]} color={selected ? '#45d99a' : lightScene ? '#233238' : '#f8fafc'} lineWidth={selected ? 3 : 2} depthTest={false} /><Line points={[start, end]} color="#ffffff" lineWidth={12} transparent opacity={.002} depthTest={false} depthWrite={false} />{!props.suppressSceneLabels && <Html center position={middle}><button type="button" className={`measurement-label measurement-select-label${selected ? ' selected' : ''}`} onClick={(event) => { event.stopPropagation(); if (props.tool === 'route') { props.onNotice('Route creation selects device endpoints only.'); return; } selectMeasurement(); }}>{measurement.text || `${(distance3(measurement.start, measurement.end) / 1000).toFixed(2)} m`}</button></Html>}</group>;
+        return <group key={measurement.id} renderOrder={5000} userData={{ measurementId: measurement.id }} onClick={(event) => { if (shouldIgnoreClick()) return; if (props.tool === 'measure') { openMeasurementPicker(event, { kind: 'measurement', id: measurement.id }); return; } event.stopPropagation(); if (props.tool === 'route') { props.onNotice('Route creation selects device endpoints only.'); return; } selectMeasurement(); }}><Line points={[start, end]} color={selected ? '#45d99a' : lightScene ? '#233238' : '#f8fafc'} lineWidth={selected ? 3 : 2} depthTest={false} depthWrite={false} renderOrder={5000} /><Line points={[start, end]} color="#ffffff" lineWidth={12} transparent opacity={.002} depthTest={false} depthWrite={false} renderOrder={4999} />{!props.suppressSceneLabels && <Html center position={middle}><button type="button" className={`measurement-label measurement-select-label${selected ? ' selected' : ''}`} onClick={(event) => { event.stopPropagation(); if (props.tool === 'route') { props.onNotice('Route creation selects device endpoints only.'); return; } selectMeasurement(); }}>{formatMeasurementLabel(measurement.text, distance3(measurement.start, measurement.end))}</button></Html>}</group>;
       })}
-      {props.photoMode && props.project.photoMarkers.filter((marker) => floorVisible(marker.floorId) && (props.visiblePhotoCategories?.has(marker.category) ?? true)).map((marker) => { const markerFloor = floorMap.get(marker.floorId); if (!markerFloor) return null; return <Html key={marker.id} center position={[mmToM(marker.position.x), mmToM(markerFloor.elevationMm + marker.position.y) + .12, mmToM(marker.position.z)]}><button className="photo-map-marker" title={t('Open attached photos')} aria-label={`${t('Open photos')}: ${marker.title}`} onClick={(event) => { event.stopPropagation(); props.onOpenPhotoMarker?.(marker.id); }}><Camera size={16} /><span>{marker.photos.length}</span></button></Html>; })}
+      {props.showPhotoMarkers && props.project.photoMarkers.filter((marker) => floorVisible(marker.floorId) && (props.visiblePhotoCategories?.has(marker.category) ?? true)).map((marker) => { const markerFloor = floorMap.get(marker.floorId); if (!markerFloor) return null; return <Html key={marker.id} center position={[mmToM(marker.position.x), mmToM(markerFloor.elevationMm + marker.position.y) + .12, mmToM(marker.position.z)]}><button className="photo-map-marker" title={t('Open attached photos')} aria-label={`${t('Open photos')}: ${marker.title}`} onClick={(event) => { event.stopPropagation(); props.onOpenPhotoMarker?.(marker.id); }}><Camera size={16} /><span>{marker.photos.length}</span></button></Html>; })}
       {props.conflictFocus && floorVisible(props.conflictFocus.floorId) && (() => { const conflictFloor = floorMap.get(props.conflictFocus!.floorId); if (!conflictFloor) return null; const point: [number,number,number] = [mmToM(props.conflictFocus.point.x), mmToM(conflictFloor.elevationMm + props.conflictFocus.point.y), mmToM(props.conflictFocus.point.z)]; if (props.conflictFocus.solution) return <group position={point}><mesh rotation={[-Math.PI / 2,0,0]}><torusGeometry args={[.25,.045,12,48]} /><meshBasicMaterial color="#35d98d" transparent opacity={.9} depthTest depthWrite={false} /></mesh></group>; return <group position={point} renderOrder={30}><mesh><sphereGeometry args={[.11,18,18]} /><meshBasicMaterial color="#ff3b45" transparent opacity={.82} depthTest={false} /></mesh><mesh rotation={[-Math.PI / 2,0,0]}><torusGeometry args={[.22,.025,10,32]} /><meshBasicMaterial color="#ff3b45" depthTest={false} /></mesh>{!props.suppressSceneLabels && <Html center position={[0,.28,0]}><span className="conflict-marker-label">{props.conflictFocus.label ?? t('Route conflict')}</span></Html>}</group>; })()}
 
       {props.tool === 'wall' && draft[0] && drawingHover && wallSnapResult?.guideDirection && <Line points={[
@@ -831,13 +987,20 @@ export function HouseViewport(props: Props) {
         [mmToM(drawingHover.x + wallSnapResult.guideDirection.x * 800), mmToM(floor.elevationMm) + .026, mmToM(drawingHover.z + wallSnapResult.guideDirection.z * 800)]
       ]} color="#f59e0b" lineWidth={1.5} dashed dashSize={.12} gapSize={.08} depthTest={false} />}
       {draft.length > 0 && <><Line points={[...draft, ...(drawingHover ? [drawingHover] : [])].map((point) => [mmToM(point.x), mmToM(floor.elevationMm + point.y) + .04, mmToM(point.z)] as [number, number, number])}
-        color={props.tool === 'wall' || props.tool === 'room' ? '#4ce1a1' : categoryMap.get(props.routeService)?.color ?? '#fff'} lineWidth={3} dashed depthTest={false} />
+        color={props.tool === 'wall' || props.tool === 'room' ? '#4ce1a1' : categoryMap.get(props.routeService)?.color ?? '#fff'} lineWidth={3} dashed depthTest={false} depthWrite={false} renderOrder={props.tool === 'measure' ? 5000 : 0} />
         {props.tool === 'measure' && drawingHover && <Html center wrapperClass="drafting-overlay" pointerEvents="none" position={[mmToM((draft[0].x + drawingHover.x) / 2), mmToM(floor.elevationMm + (draft[0].y + drawingHover.y) / 2) + .1, mmToM((draft[0].z + drawingHover.z) / 2)]}><span className="measurement-label">{(distance3(draft[0], drawingHover) / 1000).toFixed(2)} m</span></Html>}
         {props.tool === 'wall' && wallLengthDraft && drawingHover && <Html center wrapperClass="drafting-overlay" pointerEvents="none" position={[mmToM(drawingHover.x), mmToM(floor.elevationMm) + .18, mmToM(drawingHover.z)]}><span className="wall-length-entry">{wallLengthDraft.replace(',', '.')} m · Enter ↵</span></Html>}
       </>}
-      {hover && props.tool !== 'select' && <group position={[mmToM(props.tool === 'wall' && drawingHover ? drawingHover.x : hover.x), mmToM(floor.elevationMm + (props.tool === 'wall' && drawingHover ? drawingHover.y : hover.y)) + .045, mmToM(props.tool === 'wall' && drawingHover ? drawingHover.z : hover.z)]}><mesh rotation={[-Math.PI / 2,0,0]}><ringGeometry args={[.07,.1,20]} /><meshBasicMaterial color={wallSnapResult?.kind === 'cardinal' || wallSnapResult?.kind === 'perpendicular' ? '#f59e0b' : '#45d99a'} depthTest={false} /></mesh><Line points={[[ -.14,0,0],[.14,0,0]]} color={wallSnapResult?.kind === 'cardinal' || wallSnapResult?.kind === 'perpendicular' ? '#f59e0b' : '#45d99a'} lineWidth={2} depthTest={false} /><Line points={[[0,0,-.14],[0,0,.14]]} color={wallSnapResult?.kind === 'cardinal' || wallSnapResult?.kind === 'perpendicular' ? '#f59e0b' : '#45d99a'} lineWidth={2} depthTest={false} />{(props.tool === 'wall' || props.tool === 'structure') && wallSnapLabel && <Html center wrapperClass="drafting-overlay" pointerEvents="none" position={[0,.11,0]}><span className="wall-snap-label">{wallSnapLabel}</span></Html>}</group>}
-      <GizmoHelper alignment="bottom-left" margin={[58, 58]}><GizmoViewport axisColors={['#ef4444','#2563eb','#22c55e']} labelColor={lightScene ? '#1f2937' : '#f8fafc'} axisHeadScale={.75} labels={['X','Z','Y']} /></GizmoHelper>
+      {hover && props.tool !== 'select' && props.tool !== 'measure' && <group position={[mmToM(props.tool === 'wall' && drawingHover ? drawingHover.x : hover.x), mmToM(floor.elevationMm + (props.tool === 'wall' && drawingHover ? drawingHover.y : hover.y)) + .045, mmToM(props.tool === 'wall' && drawingHover ? drawingHover.z : hover.z)]}><mesh rotation={[-Math.PI / 2,0,0]}><ringGeometry args={[.07,.1,20]} /><meshBasicMaterial color={wallSnapResult?.kind === 'cardinal' || wallSnapResult?.kind === 'perpendicular' ? '#f59e0b' : '#45d99a'} depthTest={false} /></mesh><Line points={[[ -.14,0,0],[.14,0,0]]} color={wallSnapResult?.kind === 'cardinal' || wallSnapResult?.kind === 'perpendicular' ? '#f59e0b' : '#45d99a'} lineWidth={2} depthTest={false} /><Line points={[[0,0,-.14],[0,0,.14]]} color={wallSnapResult?.kind === 'cardinal' || wallSnapResult?.kind === 'perpendicular' ? '#f59e0b' : '#45d99a'} lineWidth={2} depthTest={false} />{(props.tool === 'wall' || props.tool === 'structure') && wallSnapLabel && <Html center wrapperClass="drafting-overlay" pointerEvents="none" position={[0,.11,0]}><span className="wall-snap-label">{wallSnapLabel}</span></Html>}</group>}
+      {!props.snapshotMode && <GizmoHelper alignment="bottom-left" margin={[58, 58]}><GizmoViewport axisColors={['#ef4444','#2563eb','#22c55e']} labelColor={lightScene ? '#1f2937' : '#f8fafc'} axisHeadScale={.75} labels={['X','Z','Y']} /></GizmoHelper>}
     </Canvas>
+    {measurementPicker && <div className="measurement-target-picker" style={{ left: measurementPicker.left, top: measurementPicker.top }} role="dialog" aria-label={t(draft.length ? 'Choose point B' : 'Choose point A')}>
+      <header><span><strong>{t(draft.length ? 'Choose point B' : 'Choose point A')}</strong><small>{t('Select exactly what this point belongs to.')}</small></span><button type="button" aria-label={t('Close')} onClick={() => setMeasurementPicker(undefined)}><X size={14} /></button></header>
+      <div>{measurementPicker.targets.map((target) => {
+        const kindLabel: Record<MeasurementTargetKind, string> = { floor: 'Floor', wall: 'Wall', device: 'Device', structure: 'Structure', route: 'Route', room: 'Room', measurement: 'Measurement' };
+        return <button type="button" key={target.key} onClick={() => chooseMeasurementTarget(target)}><span className={`measurement-target-kind ${target.kind}`}>{t(kindLabel[target.kind])}</span><span><strong>{target.label}</strong><small>X {(target.point.x / 1000).toFixed(2)} · Y {(target.point.z / 1000).toFixed(2)} · Z {(target.point.y / 1000).toFixed(2)} m</small></span></button>;
+      })}</div>
+    </div>}
     {pendingPortDevice && <RoutePortDialog device={pendingPortDevice.device} deviceType={props.project.deviceTypes.find((type) => type.id === pendingPortDevice.device.typeId)!} routes={props.project.routes} service={props.routeService} routeKind={props.routeKind === 'junction' || props.routeKind === 'transition' ? 'cable' : props.routeKind} role={pendingPortDevice.role} firstPortDirection={pendingPortDevice.firstPortDirection} validationMessage={pendingPortError} serviceColors={Object.fromEntries(props.project.categories.map((item) => [item.serviceCategory, item.color]))} allowedPortIds={pendingPortDevice.allowedPortIds} allowSharedPorts={props.project.deviceTypes.find((type) => type.id === pendingPortDevice.device.typeId)?.family === 'transition'} onChoose={(port) => completePortSelection(pendingPortDevice.device, port)} onAddPort={(port) => { props.onAddDevicePort(pendingPortDevice.device.id, port); setPendingCreatedPort({ deviceId: pendingPortDevice.device.id, portId: port.id }); }} onReassign={props.onReassignRoutePort} onClose={() => { setPendingPortError(undefined); setPendingPortDevice(undefined); setPendingCreatedPort(undefined); }} />}
     <button className="compass" aria-label="Align view to north" title="Align view to north" onClick={props.onNorth}><span ref={compassRose} className="compass-rose"><span className="north">N</span><i /></span></button>
   </div>;

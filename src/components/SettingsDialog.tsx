@@ -67,6 +67,9 @@ function RoutingSettings({ project, patchPreferences, services }: { project: Pro
         <label className="field help-target" data-help={t('Sets the route reference plane below the finished floor surface.')}>
           <span>{t('Floor route offset')}</span><span className="input-with-suffix"><DraftNumberInput min={1} step={1} value={Math.abs(preferences.floorRouteOffsetMm) / 10} onCommit={(value) => patchPreferences({ floorRouteOffsetMm: -Math.max(10, Math.round(Math.abs(value) * 10)) })} /><em>cm</em></span>
         </label>
+        {(['pipe','duct'] as const).map((kind) => <label className="field help-target" data-help={t('Minimum downward grade on floor and ceiling runs, applied in the selected flow direction.')} key={kind}>
+          <span>{t(kind === 'pipe' ? 'Pipe gravity slope' : 'Duct gravity slope')}</span><span className="input-with-suffix"><DraftNumberInput min={.1} max={10} step={.1} value={(preferences.routeGravitySlopePermille[kind] ?? (kind === 'pipe' ? 10 : 5)) / 10} onCommit={(value) => patchPreferences({ routeGravitySlopePermille: { ...preferences.routeGravitySlopePermille, [kind]: Math.max(1, Math.round(value * 10)) } })} /><em>%</em></span>
+        </label>)}
       </article>
       <article className="route-stack-card">
         <h3 className="help-target" data-help={t('Order of concealed floor services from deepest to closest to the finished floor. Vertical placement uses each service minimum side-by-side separation.')}>{t('Floor service stack')}</h3>
@@ -86,7 +89,7 @@ function RoutingSettings({ project, patchPreferences, services }: { project: Pro
       <div className="route-clearance-grid">{services.map((category) => {
         const service = category.serviceCategory;
         const value = routeMetric === 'separation' ? preferences.routeSeparationMm[service] ?? 30 : routeMetric === 'curvature' ? preferences.routeBendRadiusMm[service] ?? 100 : preferences.routeDiameterMm[service] ?? 20;
-        const help = routeMetric === 'separation' ? 'Minimum centerline separation for this service.' : routeMetric === 'curvature' ? 'Preferred bend radius for this service on floor and ceiling paths.' : 'Installed outside diameter used when a route has no explicit physical size.';
+        const help = routeMetric === 'separation' ? 'Minimum centerline separation for this service.' : routeMetric === 'curvature' ? 'Preferred bend radius for wall corners, obstacle detours, and structural transitions.' : 'Installed outside diameter used when a route has no explicit physical size.';
         const commit = (next: number) => { const millimetres = Math.max(routeMetric === 'diameter' ? 1 : 0, Math.round(next * 10)); if (routeMetric === 'separation') patchPreferences({ routeSeparationMm: { ...preferences.routeSeparationMm, [service]: millimetres } }); else if (routeMetric === 'curvature') patchPreferences({ routeBendRadiusMm: { ...preferences.routeBendRadiusMm, [service]: millimetres } }); else patchPreferences({ routeDiameterMm: { ...preferences.routeDiameterMm, [service]: millimetres } }); };
         return <label className="field help-target" data-help={t(help)} key={category.id}><span><i style={{ background: category.color }} />{t(category.name)}</span><span className="input-with-suffix"><DraftNumberInput min={routeMetric === 'diameter' ? .1 : 0} step={.1} value={value / 10} onCommit={commit} /><em>cm</em></span></label>;
       })}</div>

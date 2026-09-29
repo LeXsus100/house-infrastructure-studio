@@ -40,7 +40,8 @@ records and clear technical review.
 
 1. [Install and run](installation.md).
 2. [Build a first project](first-project.md).
-3. Keep the [recommended workflow](../user-guide/workflow.md) nearby while
+3. Review the [feature guide](../features/index.md) to understand each workspace.
+4. Keep the [recommended workflow](../user-guide/workflow.md) nearby while
    modelling.
-4. Read [Data and privacy](../reference/privacy.md) before importing a real
+5. Read [Data and privacy](../reference/privacy.md) before importing a real
    blueprint or photograph.

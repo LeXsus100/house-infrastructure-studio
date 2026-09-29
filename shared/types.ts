@@ -443,6 +443,8 @@ export interface ProjectSnapshot {
     ceilingRouteOffsetMm: number;
     floorRouteOffsetMm: number;
     routeVerticalOrder: RouteKind[];
+    /** Minimum gravity grade in millimetres of fall per metre of plan travel. */
+    routeGravitySlopePermille: Partial<Record<RouteKind, number>>;
     /** Service-specific bend radius used on floor and ceiling turns. */
     routeBendRadiusMm: Partial<Record<ServiceCategory, number>>;
     motionMode: 'system' | 'animated' | 'reduced' | 'off';

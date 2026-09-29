@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import { Camera } from 'lucide-react';
+import { Camera, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, ScanEye } from 'lucide-react';
 import type { Device, DevicePort, DeviceType, Floor, Measurement, PhotoCategory, PhotoMarker, ProjectPhoto, ProjectSnapshot, Room, RoomCategory, Route, Selection, ServiceCategory, ThemeMode, ToolMode, Vec2, Vec3, ViewMode, Wall } from '../shared/types';
 import { SOFTWARE_NAME } from '../shared/branding';
 import { api } from './api';
@@ -15,14 +15,14 @@ import { LightingSidebar } from './components/LightingSidebar';
 import { OverviewPage } from './components/OverviewPage';
 import { PhotoMarkerDialog } from './components/PhotoMarkerDialog';
 import { PhotoPointCreateDialog } from './components/PhotoPointCreateDialog';
-import { PHOTO_CATEGORIES, PhotoSidebar } from './components/PhotoSidebar';
+import { PHOTO_CATEGORIES } from './lib/photos';
 import { PropertiesPanel } from './components/PropertiesPanel';
 import { ProjectTutorial } from './components/ProjectTutorial';
 import { SettingsDialog } from './components/SettingsDialog';
 import { TopToolbar } from './components/TopToolbar';
 import { ViewSnapshotDialog } from './components/ViewSnapshotDialog';
 import { HouseViewport, type ViewCommand } from './editor/HouseViewport';
-import { addVerticalClearanceAtCrossings, confineRouteToAssociatedWalls, constrainRoutePointToWallLining, devicePortWorldPosition, distance3, findRouteIntersections, mountingRotation, orderWallBoundaryWithGaps, orthogonalizeWallRoutePoints, pointInPolygon, polygonArea, polygonEdgesCross, preferredDevicePort, projectDevicePositionOntoWall, proposeRouteClearanceSolution, reattachDeviceToWall, reattachRouteEndpointsToDevice, resolveRouteConflicts, routeDisplayDiameterMm, routePairClearanceMm, routePointsKeepDeviceClearance, routeSurfaceBounds, stackFloorRoutes, wallAtPlanPoint, wallBackFaceRecessMm, wallCenterDepthForBackFaceRecess, wallLength, wallLocalToWorld, wallMountedPosition, wallServiceDepthMm, worldToWallLocal, verticalTransitionBounds } from './lib/geometry';
+import { addVerticalClearanceAtCrossings, confineRouteToAssociatedWalls, constrainRoutePointToWallLining, deviceRouteEndpointWorldPosition, distance3, findRouteIntersections, mountingRotation, orderWallBoundaryWithGaps, orthogonalizeWallRoutePoints, pointInPolygon, polygonArea, polygonEdgesCross, preferredDevicePort, projectDevicePositionOntoWall, proposeRouteClearanceSolution, reattachDeviceToWall, reattachRouteEndpointsToDevice, resolveRouteConflicts, routeDisplayDiameterMm, routeEndpointShellCrossing, routePairClearanceMm, routePointsKeepDeviceClearance, routeSurfaceBounds, stackFloorRoutes, wallAtPlanPoint, wallBackFaceRecessMm, wallCenterDepthForBackFaceRecess, wallLength, wallLocalToWorld, wallMountedPosition, wallServiceDepthMm, worldToWallLocal, verticalTransitionBounds } from './lib/geometry';
 import { commitHistory, createDefaultProject, createHistory, normalizeConcealedRouteSurfaces, redoHistory, removeDevicesAndConnectedRoutes, serializeProject, startingFloorId, undoHistory, upgradeProject, type HistoryState } from './lib/project';
 import { ETHERNET_PAIR_COLORS, ITALIAN_CONDUCTOR_COLORS } from './lib/italianColors';
 import { useI18n } from './lib/i18n';
@@ -44,16 +44,18 @@ function selectionIsLocked(project: ProjectSnapshot, selection: Selection) {
 }
 
 export default function App() {
-  const { t } = useI18n();
+  const { t, language } = useI18n();
   const [appIconUrl, setAppIconUrl] = useState(loadLocalAppIcon);
   const [history, setHistory] = useState<HistoryState<ProjectSnapshot> | null>(null);
   const [selection, setSelection] = useState<Selection | null>(null);
   const [tool, setTool] = useState<ToolMode>('select');
+  const [workspaceMode, setWorkspaceMode] = useState<'edit' | 'view'>('edit');
+  const [leftSidebarCollapsed, setLeftSidebarCollapsed] = useState(false);
+  const [propertiesPanelCollapsed, setPropertiesPanelCollapsed] = useState(false);
   const [activeFloorId, setActiveFloorId] = useState('');
   const [placementType, setPlacementType] = useState<DeviceType>();
   const [routeKind, setRouteKind] = useState<Route['kind'] | 'junction' | 'transition'>('cable');
   const [routeService, setRouteService] = useState<ServiceCategory>('electrical');
-  const [measurementType, setMeasurementType] = useState<Measurement['type']>('point-to-point');
   const [viewMode, setViewMode] = useState<ViewMode>('normal');
   const [isolatedRoomId, setIsolatedRoomId] = useState<string>();
   const [projection, setProjection] = useState<'perspective' | 'orthographic'>('perspective');
@@ -77,20 +79,22 @@ export default function App() {
   const [firstRun, setFirstRun] = useState(false);
   const [status, setStatus] = useState({ x: 0, y: 0, z: 0 });
   const [notice, setNotice] = useState('Ready');
-  const [page, setPage] = useState<'editor' | 'overview' | 'light' | 'photo'>('editor');
+  const [page, setPage] = useState<'editor' | 'overview' | 'light'>('editor');
   const [photoPlacementActive, setPhotoPlacementActive] = useState(false);
-  const [photoXray, setPhotoXray] = useState(true);
   const [photoCategory, setPhotoCategory] = useState<PhotoCategory>('finished-house');
   const [pendingPhotoPosition, setPendingPhotoPosition] = useState<Vec3>();
-  const [visiblePhotoCategories, setVisiblePhotoCategories] = useState<Set<PhotoCategory>>(() => new Set(PHOTO_CATEGORIES.map((item) => item.id)));
+  const [visiblePhotoCategories, setVisiblePhotoCategories] = useState<Set<PhotoCategory>>(new Set());
   const [openPhotoMarkerId, setOpenPhotoMarkerId] = useState<string>();
   const [snapshotSource, setSnapshotSource] = useState<string>();
   const [snapshotPreparing, setSnapshotPreparing] = useState(false);
+  const [snapshotNorthAngleRad, setSnapshotNorthAngleRad] = useState(0);
+  const [snapshotPixelRatio, setSnapshotPixelRatio] = useState(5);
   const [resolvedTheme, setResolvedTheme] = useState<'light' | 'dark'>('light');
   const clipboard = useRef<Selection | null>(null);
   const importInput = useRef<HTMLInputElement>(null);
   const viewportRef = useRef<HTMLElement>(null);
   const project = history?.present;
+  useEffect(() => { setVisiblePhotoCategories(new Set()); setPhotoPlacementActive(false); setPendingPhotoPosition(undefined); }, [project?.id]);
   const lightingAnalysis = useMemo(() => project ? analyzeLightingNetwork(project) : undefined, [project]);
   const lightingDeviceIds = useMemo(() => project && lightingAnalysis ? lightingVisibleDeviceIds(project, lightingAnalysis) : new Set<string>(), [lightingAnalysis, project]);
   const lightingRouteIds = useMemo(() => new Set(lightingAnalysis?.routeIds ?? []), [lightingAnalysis]);
@@ -170,10 +174,10 @@ export default function App() {
   }, [project, saveNow]);
 
   const commit = useCallback((updater: (current: ProjectSnapshot) => ProjectSnapshot) => {
-    setHistory((state) => state ? commitHistory(state, updater(state.present)) : state);
+    setHistory((state) => state ? commitHistory(state, { ...updater(state.present), updatedAt: new Date().toISOString() }) : state);
   }, []);
-  const undo = useCallback(() => setHistory((state) => state ? undoHistory(state) : state), []);
-  const redo = useCallback(() => setHistory((state) => state ? redoHistory(state) : state), []);
+  const undo = useCallback(() => setHistory((state) => { if (!state?.past.length) return state; const next = undoHistory(state); return { ...next, present: { ...next.present, updatedAt: new Date().toISOString() } }; }), []);
+  const redo = useCallback(() => setHistory((state) => { if (!state?.future.length) return state; const next = redoHistory(state); return { ...next, present: { ...next.present, updatedAt: new Date().toISOString() } }; }), []);
 
   const select = useCallback((next: Selection | null, additive = false) => {
     if (next?.type === 'room' && !additive) {
@@ -205,13 +209,18 @@ export default function App() {
       if (container) setPlacementType(container);
     }
   }, [project]);
+  const changeWorkspaceMode = useCallback((mode: 'edit' | 'view') => {
+    setWorkspaceMode(mode);
+    if (mode === 'view') { setTool('select'); setCancelToken((value) => value + 1); }
+    setNotice(mode === 'view' ? t('View mode enabled. Creation tools and editor panels are hidden.') : t('Ready'));
+  }, [t]);
   const choosePlacementType = useCallback((type: DeviceType) => {
     setPlacementType(type);
     if (type.serviceCategory !== 'structural') setVisibleServices((current) => new Set(current).add(type.serviceCategory));
     setTool(type.serviceCategory === 'structural' ? 'structure' : type.serviceCategory === 'storage' ? 'container' : 'device');
   }, []);
   useEffect(() => {
-    if (viewMode === 'xray' && selection?.type === 'wall' || viewMode !== 'xray' && selection?.type === 'route') setSelection(null);
+    if (viewMode !== 'xray' && selection?.type === 'route') setSelection(null);
   }, [viewMode, selection?.type]);
 
   const updateWall = (id: string, patch: Partial<Wall>) => commit((current) => {
@@ -367,8 +376,8 @@ export default function App() {
     const destinationPort = destination?.ports.find((port) => port.id === initialDestinationPortId) ?? (destination ? preferredDevicePort(destination, routeService, 'destination') : undefined);
     if (sourcePort && destinationPort && !routeEndpointDirectionsCoherent(sourcePort, destinationPort)) { setNotice(`The second endpoint must use an ${sourcePort.direction === 'output' ? 'input' : 'output'} or bidirectional port.`); return false; }
     const activeElevation = project.floors.find((item) => item.id === activeFloorId)?.elevationMm ?? 0;
-    if (source && sourcePort) { const point = devicePortWorldPosition(source, sourcePort); point.y += (project.floors.find((item) => item.id === source!.floorId)?.elevationMm ?? activeElevation) - activeElevation; points[0] = point; }
-    if (destination && destinationPort) { const point = devicePortWorldPosition(destination, destinationPort); point.y += (project.floors.find((item) => item.id === destination!.floorId)?.elevationMm ?? activeElevation) - activeElevation; points[points.length - 1] = point; }
+    if (source && sourcePort) { const point = deviceRouteEndpointWorldPosition(source, sourcePort); point.y += (project.floors.find((item) => item.id === source!.floorId)?.elevationMm ?? activeElevation) - activeElevation; points[0] = point; }
+    if (destination && destinationPort) { const point = deviceRouteEndpointWorldPosition(destination, destinationPort); point.y += (project.floors.find((item) => item.id === destination!.floorId)?.elevationMm ?? activeElevation) - activeElevation; points[points.length - 1] = point; }
     const existingRoutes = project.routes.filter((route) => route.floorId === activeFloorId); const clearance = Math.max(project.preferences.routeSeparationMm[routeService] ?? 30, project.preferences.routeDiameterMm[routeService] ?? 20); const concealedPoints = points.map((point) => ({ ...point })); const floorDevices = project.devices.filter((device) => device.floorId === activeFloorId);
     if (wallIds.length) points = points.map((point) => {
       const candidates = project.walls.filter((wall) => wallIds.includes(wall.id)).map((wall) => ({ wall, local: worldToWallLocal(wall, point) })).filter(({ wall, local }) => local.distanceAlongMm > 5 && local.distanceAlongMm < wallLength(wall) - 5 && local.heightMm >= 0 && local.heightMm <= wall.heightMm && Math.abs(local.depthMm) <= wall.thicknessMm / 2 + 5).sort((a, b) => Math.abs(a.local.depthMm) - Math.abs(b.local.depthMm));
@@ -399,17 +408,26 @@ export default function App() {
     };
     const candidate = resolveRouteConflicts(route, project.preferences.avoidRouteOverlaps ? existingRoutes : [], project.preferences.routeOverlapPriorities, project.preferences.routeSeparationMm, project.preferences.routeDiameterMm, 10, project.walls, project.preferences.routeBendRadiusMm, routeSurfaceBounds(project.floors, activeFloorId), project.preferences.routeTurnPenaltyMm, floorDevices);
     const resolved = routePointsKeepDeviceClearance(candidate.route.points, floorDevices, endpointDeviceIds, 100) ? candidate : { route, remainingConflicts: candidate.remainingConflicts };
-    const confinedRoute = confineRouteToAssociatedWalls({ ...resolved.route, points: orthogonalizeWallRoutePoints(resolved.route.points, project.walls.filter((wall) => wallIds.includes(wall.id))).map((point, order) => ({ ...point, id: 'id' in point && typeof point.id === 'string' ? point.id : crypto.randomUUID(), order })) }, project.walls);
+    const confinedRoute = confineRouteToAssociatedWalls(resolved.route, project.walls, 300, routeEndpointShellCrossing(resolved.route, project.devices));
     const finalRoute = normalizeConcealedRouteSurfaces({ ...project, routes: [confinedRoute] }, [confinedRoute])[0] ?? confinedRoute;
     commit((current) => {
       const stacked = stackFloorRoutes([...current.routes, finalRoute], activeFloorId, current.preferences.floorRouteOffsetMm, current.preferences.routeVerticalOrder, current.preferences.routeSeparationMm);
-      if (!current.preferences.avoidRouteOverlaps) return { ...current, routes: stacked };
-      const inserted = stacked.find((item) => item.id === finalRoute.id); if (!inserted) return { ...current, routes: stacked };
-      const others = stacked.filter((item) => item.id !== inserted.id && item.floorId === inserted.floorId);
-      const conflictResolved = resolveRouteConflicts(inserted, others, current.preferences.routeOverlapPriorities, current.preferences.routeSeparationMm, current.preferences.routeDiameterMm, 10, current.walls, current.preferences.routeBendRadiusMm, routeSurfaceBounds(current.floors, inserted.floorId), current.preferences.routeTurnPenaltyMm, current.devices.filter((device) => device.floorId === inserted.floorId)).route;
-      const confined = confineRouteToAssociatedWalls(conflictResolved, current.walls);
-      const normalized = normalizeConcealedRouteSurfaces({ ...current, routes: [confined] }, [confined])[0] ?? confined;
-      return { ...current, routes: stacked.map((item) => item.id === normalized.id ? normalized : item) };
+      let routes = stacked;
+      if (current.preferences.avoidRouteOverlaps) {
+        const inserted = stacked.find((item) => item.id === finalRoute.id);
+        if (inserted) {
+          const others = stacked.filter((item) => item.id !== inserted.id && item.floorId === inserted.floorId);
+          const conflictResolved = resolveRouteConflicts(inserted, others, current.preferences.routeOverlapPriorities, current.preferences.routeSeparationMm, current.preferences.routeDiameterMm, 10, current.walls, current.preferences.routeBendRadiusMm, routeSurfaceBounds(current.floors, inserted.floorId), current.preferences.routeTurnPenaltyMm, current.devices.filter((device) => device.floorId === inserted.floorId)).route;
+          const confined = confineRouteToAssociatedWalls(conflictResolved, current.walls, 300, routeEndpointShellCrossing(conflictResolved, current.devices));
+          const normalized = normalizeConcealedRouteSurfaces({ ...current, routes: [confined] }, [confined])[0] ?? confined;
+          routes = stacked.map((item) => item.id === normalized.id ? normalized : item);
+        }
+      }
+      const devices = current.devices.map((device) => {
+        const type = current.deviceTypes.find((item) => item.id === device.typeId);
+        return type?.unlimitedPorts ? { ...device, dimensions: dimensionsForDevicePorts(device, type, device.ports, routes, current.preferences.routeDiameterMm) } : device;
+      });
+      return { ...current, routes, devices };
     }); setSelection(viewMode === 'xray' ? { type: 'route', ids: [finalRoute.id] } : null); setTool('select');
     const hiddenHint = viewMode === 'xray' ? '' : ' Turn on X-ray to inspect the concealed route.';
     const conflictHint = resolved.remainingConflicts ? ` ${resolved.remainingConflicts} clearance conflict${resolved.remainingConflicts === 1 ? '' : 's'} remain; review them in Settings.` : '';
@@ -436,9 +454,9 @@ export default function App() {
     });
     setSelection({ type: 'device', ids: [id] }); setNotice(targetRoute ? `${targetRoute.name} split at ${junction.name}. New routes can branch from its ports.` : `${junction.name} placed.`);
   };
-  const createMeasurement = (start: Vec3, end: Vec3, type: Measurement['type'] = measurementType, referencedObjectIds: string[] = []) => {
-    if (!project) return; const wallId = selection?.type === 'wall' ? selection.ids[0] : undefined;
-    const measurement: Measurement = { id: crypto.randomUUID(), projectId: project.id, type, name: `${type === 'height' || type === 'vertical' ? 'Height' : 'Dimension'} ${project.measurements.length + 1}`, start, end, wallId, referencedObjectIds, text: '', visible: true, locked: false };
+  const createMeasurement = (start: Vec3, end: Vec3, referencedObjectIds: string[] = []) => {
+    if (!project) return; const wallId = referencedObjectIds.find((id) => project.walls.some((wall) => wall.id === id));
+    const measurement: Measurement = { id: crypto.randomUUID(), projectId: project.id, type: 'point-to-point', name: `Dimension ${project.measurements.length + 1}`, start, end, wallId, referencedObjectIds, text: '', visible: true, locked: false };
     commit((current) => ({ ...current, measurements: [...current.measurements, measurement] })); setSelection({ type: 'measurement', ids: [measurement.id] }); setTool('select');
   };
 
@@ -488,6 +506,8 @@ export default function App() {
       const editing = event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLSelectElement || !!input && !['checkbox', 'radio', 'button'].includes(input.type);
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') { event.preventDefault(); void saveNow(); return; }
       if (editing) return;
+      if (event.key.toLowerCase() === 'x') { setViewMode((current) => current === 'xray' ? 'normal' : 'xray'); return; }
+      if (page !== 'editor' || workspaceMode === 'view') return;
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') { event.preventDefault(); event.shiftKey ? redo() : undo(); }
       else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'y') { event.preventDefault(); redo(); }
       else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'd') { event.preventDefault(); duplicateSelection(); }
@@ -495,11 +515,10 @@ export default function App() {
       else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'v') { if (clipboard.current) duplicateObjects(clipboard.current); }
       else if (event.key === 'Delete' || event.key === 'Backspace') { event.preventDefault(); if (tool !== 'select') { setCancelToken((value) => value + 1); setNotice('Current drawing cancelled.'); } else deleteSelection(); }
       else if (event.key === 'Escape') { setSelection(null); setCancelToken((value) => value + 1); }
-      else if (event.key.toLowerCase() === 'x') { if (page === 'photo') setPhotoXray((current) => !current); else setViewMode((current) => current === 'xray' ? 'normal' : 'xray'); }
       else if (event.key.toLowerCase() === 's') chooseTool('select'); else if (event.key.toLowerCase() === 'w') chooseTool('wall'); else if (event.key.toLowerCase() === 'r') chooseTool('room'); else if (event.key.toLowerCase() === 't') chooseTool('structure'); else if (event.key.toLowerCase() === 'd') chooseTool('device'); else if (event.key.toLowerCase() === 'c') chooseTool('container'); else if (event.key.toLowerCase() === 'm') chooseTool('measure'); else if (event.key.toLowerCase() === 'e') chooseTool('route');
     };
     window.addEventListener('keydown', onKey); return () => window.removeEventListener('keydown', onKey);
-  }, [chooseTool, deleteSelection, duplicateObjects, duplicateSelection, page, redo, saveNow, selection, tool, undo]);
+  }, [chooseTool, deleteSelection, duplicateObjects, duplicateSelection, page, redo, saveNow, selection, tool, undo, workspaceMode]);
 
   const theme = (localStorage.getItem('casa-theme') as ThemeMode | null) ?? project?.preferences.theme ?? 'system';
   const [themeMode, setThemeMode] = useState<ThemeMode>(theme);
@@ -557,22 +576,36 @@ export default function App() {
   const removeMarkerPhoto = async (markerId: string, photo: ProjectPhoto) => { if (!project) return; try { await api.deletePhoto(project.id, photo.storedFileName); } catch { /* The metadata removal still prevents a broken project reference. */ } commit((current) => ({ ...current, photoMarkers: current.photoMarkers.map((marker) => marker.id === markerId ? { ...marker, photos: marker.photos.filter((item) => item.id !== photo.id) } : marker) })); };
   const deletePhotoMarker = async (id: string) => { if (!project) return; const marker = project.photoMarkers.find((item) => item.id === id); if (!marker || !window.confirm(t('Delete this photo point and its local pictures?'))) return; await Promise.all(marker.photos.map((photo) => api.deletePhoto(project.id, photo.storedFileName).catch(() => undefined))); commit((current) => ({ ...current, photoMarkers: current.photoMarkers.filter((item) => item.id !== id) })); setOpenPhotoMarkerId(undefined); };
   const photoCounts = useMemo(() => project ? Object.fromEntries(PHOTO_CATEGORIES.map((category) => [category.id, project.photoMarkers.filter((marker) => marker.category === category.id).length])) as Partial<Record<PhotoCategory, number>> : {}, [project]);
-  const changePage = (next: 'editor' | 'overview' | 'light' | 'photo') => { setPage(next); setPhotoPlacementActive(false); setPendingPhotoPosition(undefined); if (next === 'photo' || next === 'light') { setSelection(null); setIsolatedRoomId(undefined); setShowAllFloors(false); } };
-  const toolbarViewMode: ViewMode = page === 'light' ? 'xray' : page === 'photo' ? photoXray ? 'xray' : 'normal' : viewMode;
-  const changeToolbarViewMode = (mode: ViewMode) => { if (page === 'light') return; if (page === 'photo') setPhotoXray(mode === 'xray'); else setViewMode(mode); };
+  const changePage = (next: 'editor' | 'overview' | 'light') => { setPage(next); setPhotoPlacementActive(false); setPendingPhotoPosition(undefined); if (next === 'light') { setSelection(null); setIsolatedRoomId(undefined); setShowAllFloors(false); } };
+  const toolbarViewMode: ViewMode = page === 'light' ? 'xray' : viewMode;
+  const changeToolbarViewMode = (mode: ViewMode) => { if (page !== 'light') setViewMode(mode); };
   const exportBackup = () => { if (!project) return; const blob = new Blob([serializeProject(project)], { type: 'application/json' }); const url = URL.createObjectURL(blob); const anchor = document.createElement('a'); anchor.href = url; anchor.download = `${project.title.replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '') || 'house-project'}-backup.json`; anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); };
   const importBackup = async (file: File) => { try { const backup = JSON.parse(await file.text()); const loaded = upgradeProject(await api.importBackup(backup)); setHistory(createHistory(loaded)); setActiveFloorId(startingFloorId(loaded)); setProjectManager(false); setNotice('Project backup imported and validated.'); } catch (error) { setNotice(error instanceof Error ? error.message : 'Backup import failed.'); } };
   const refreshProjects = async () => setProjectList(await api.listProjects());
   const openManager = () => { void refreshProjects(); setProjectManager(true); };
 
+  const beginSnapshotCapture = () => {
+    const canvas = viewportRef.current?.querySelector('canvas'); const longestSide = Math.max(canvas?.clientWidth ?? 0, canvas?.clientHeight ?? 0, 1);
+    // Five times the live viewport is already print-grade for the default A4
+    // layout. Avoid rendering beyond that scale on smaller screens: the extra
+    // pixels made opening the export dialog noticeably slower without adding
+    // visible detail to the generated sheet.
+    setSnapshotPixelRatio(Math.max(1, Math.min(5, 7200 / longestSide))); setSnapshotPreparing(true);
+  };
+
   useEffect(() => {
     if (!snapshotPreparing) return;
-    let secondFrame = 0; const firstFrame = requestAnimationFrame(() => { secondFrame = requestAnimationFrame(() => {
+    let cancelled = false; let secondFrame = 0; let thirdFrame = 0; const firstFrame = requestAnimationFrame(() => { secondFrame = requestAnimationFrame(() => { thirdFrame = requestAnimationFrame(() => {
       const canvas = viewportRef.current?.querySelector('canvas');
-      if (canvas) setSnapshotSource(canvas.toDataURL('image/png')); else setNotice('The current 3D view could not be captured.');
-      setSnapshotPreparing(false);
-    }); });
-    return () => { cancelAnimationFrame(firstFrame); cancelAnimationFrame(secondFrame); };
+      const compassTransform = viewportRef.current?.querySelector<HTMLElement>('.compass-rose')?.style.transform ?? '';
+      const compassAngle = Number(compassTransform.match(/rotate\(([-+\d.eE]+)rad\)/)?.[1] ?? 0);
+      if (!canvas) { setNotice('The current 3D view could not be captured.'); setSnapshotPreparing(false); return; }
+      canvas.toBlob((blob) => {
+        if (cancelled || !blob) { if (!cancelled) { setNotice('The current 3D view could not be captured.'); setSnapshotPreparing(false); } return; }
+        const reader = new FileReader(); reader.onload = () => { if (cancelled || typeof reader.result !== 'string') return; setSnapshotNorthAngleRad(Number.isFinite(compassAngle) ? compassAngle : 0); setSnapshotSource(reader.result); setSnapshotPreparing(false); }; reader.onerror = () => { if (!cancelled) { setNotice('The current 3D view could not be captured.'); setSnapshotPreparing(false); } }; reader.readAsDataURL(blob);
+      }, 'image/png');
+    }); }); });
+    return () => { cancelled = true; cancelAnimationFrame(firstFrame); cancelAnimationFrame(secondFrame); cancelAnimationFrame(thirdFrame); };
   }, [snapshotPreparing]);
 
   const focusIntersection = (item: (typeof routeIntersections)[number], solution: boolean) => {
@@ -609,10 +642,14 @@ export default function App() {
 
   const selectedWallId = selection?.type === 'wall' && selection.ids.length === 1 ? selection.ids[0] : undefined;
   const selectedRoomName = project?.rooms.find((room) => selection?.ids.includes(room.id))?.name ?? '—';
+  const editorLeftCollapsed = workspaceMode === 'view' || leftSidebarCollapsed;
+  const editorRightCollapsed = workspaceMode === 'view' || !selection || propertiesPanelCollapsed;
   if (!project || !history) {
     if (firstRun) return <FirstRunScreen appIconUrl={appIconUrl} notice={notice} onCreate={createProject} />;
     return <div className="loading-screen"><img src={appIconUrl} alt="" /><strong>{SOFTWARE_NAME}</strong><span>{notice === 'Ready' ? 'Starting the local desktop service…' : notice}</span></div>;
   }
+  const lastEditDate = new Date(project.updatedAt);
+  const lastEditLabel = Number.isNaN(lastEditDate.getTime()) ? '—' : new Intl.DateTimeFormat(language === 'it' ? 'it-IT' : 'en-GB', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(lastEditDate);
   const focusLightingItem = (deviceId?: string, routeId?: string) => {
     const device = deviceId ? project.devices.find((item) => item.id === deviceId) : undefined; const route = routeId ? project.routes.find((item) => item.id === routeId) : undefined;
     const targetFloorId = device?.accessibleFloorIds?.includes(activeFloorId) ? activeFloorId : device?.floorId ?? route?.floorId; if (targetFloorId) setActiveFloorId(targetFloorId);
@@ -621,30 +658,35 @@ export default function App() {
   };
 
   return <div className="app-shell">
-    <TopToolbar project={project} appIconUrl={appIconUrl} page={page} onPage={changePage} onOpenSettings={() => setSettingsOpen(true)} saveState={saveState} viewMode={toolbarViewMode} projection={projection} theme={themeMode} canUndo={history.past.length > 0} canRedo={history.future.length > 0}
+    <TopToolbar project={project} appIconUrl={appIconUrl} page={page} onPage={changePage} onOpenSettings={() => setSettingsOpen(true)} saveState={saveState} viewMode={toolbarViewMode} projection={projection} theme={themeMode} workspaceMode={workspaceMode} onWorkspaceMode={changeWorkspaceMode} canUndo={workspaceMode === 'edit' && history.past.length > 0} canRedo={workspaceMode === 'edit' && history.future.length > 0}
       onSave={() => void saveNow()} onUndo={undo} onRedo={redo} onViewMode={changeToolbarViewMode} onToggle2D={() => { const enable = projection !== 'orthographic'; setPendingProjectionView(enable ? 'top' : 'iso'); setProjection(enable ? 'orthographic' : 'perspective'); }} onView={(command) => setViewCommand({ command, nonce: Date.now() })}
       onTheme={changeTheme} onOpenProjectManager={openManager} onExportBackup={exportBackup} onImportBackup={() => importInput.current?.click()}
       onOpenElevation={() => selectedWallId ? setElevation({ open: true, batch: false }) : setNotice('Select one wall before opening its wall scheme.')} onBatchExport={() => setElevation({ open: true, batch: true })} />
-    {page === 'overview' ? <OverviewPage project={project} onAddRoomCategory={addRoomCategory} onEditRoomCategory={editRoomCategory} onDeleteRoomCategory={deleteRoomCategory} /> : page === 'light' && lightingAnalysis ? <div className="workspace-grid lighting-workspace"><LightingSidebar floors={project.floors} activeFloorId={activeFloorId} onActiveFloor={(id) => { setActiveFloorId(id); setSelection(null); }} onManageFloors={() => setLevelManagerOpen(true)} /><main className="viewport-column lighting-viewport" onContextMenu={(event) => event.preventDefault()}><HouseViewport project={project} activeFloorId={activeFloorId} selection={selection} tool="select" viewMode="xray" visibleServices={new Set(project.categories.map((category) => category.serviceCategory))} projection={projection} viewCommand={viewCommand} showAllFloors={false} showAdjacentBlueprint={false} cancelToken={cancelToken} sceneTheme={resolvedTheme} lightingMode visibleDeviceIds={lightingDeviceIds} visibleRouteIds={lightingRouteIds} blinkingDeviceIds={blinkingLightingSwitchIds} suppressRouteMotion routeKind="cable" routeService="lighting" measurementType="point-to-point" onSelect={(next) => { if (!next) { setSelection(null); return; } if (next.type === 'device' && lightingAnalysis.lightIds.includes(next.ids[0])) setSelection(next); }} onCreateWall={() => undefined} onCreateRoom={() => undefined} onCreateStaircase={() => undefined} onPlaceDevice={() => undefined} onCreateRoute={() => false} onCreateRouteJunction={() => undefined} onCreateMeasurement={() => undefined} onAddDevicePort={() => undefined} onReassignRoutePort={() => undefined} onStatus={setStatus} onNotice={setNotice} onNorth={() => setViewCommand({ command: 'front', nonce: Date.now() })} /></main><LightingPanel project={project} activeFloorId={activeFloorId} analysis={lightingAnalysis} selectedLightId={selectedLightId} onSelectLight={(id) => { setSelection({ type: 'device', ids: [id] }); setViewCommand({ command: 'fit-selection', nonce: Date.now() }); }} onLocateIssue={focusLightingItem} /></div> : page === 'photo' ? <div className="photo-workspace-grid"><PhotoSidebar floors={project.floors} activeFloorId={activeFloorId} showAllFloors={showAllFloors} placementActive={photoPlacementActive} visibleCategories={visiblePhotoCategories} counts={photoCounts} onActiveFloor={(id) => { setActiveFloorId(id); setShowAllFloors(false); }} onShowAllFloors={setShowAllFloors} onPlacementActive={setPhotoPlacementActive} onToggleCategory={(category) => setVisiblePhotoCategories((current) => { const next = new Set(current); next.has(category) ? next.delete(category) : next.add(category); return next; })} onSetAllCategories={(visible) => setVisiblePhotoCategories(visible ? new Set(PHOTO_CATEGORIES.map((item) => item.id)) : new Set())} onManageFloors={() => setLevelManagerOpen(true)} /><main className="viewport-column photo-viewport" onContextMenu={(event) => event.preventDefault()}><HouseViewport project={project} activeFloorId={activeFloorId} selection={null} tool="select" viewMode={photoXray ? 'xray' : 'normal'} visibleServices={new Set(project.categories.map((category) => category.serviceCategory))} projection={projection} viewCommand={viewCommand} showAllFloors={showAllFloors} showAdjacentBlueprint={false} cancelToken={cancelToken} sceneTheme={resolvedTheme} photoMode photoPlacementActive={photoPlacementActive} visiblePhotoCategories={visiblePhotoCategories} suppressRouteMotion suppressRoutes={!photoXray} routeKind="cable" routeService="electrical" measurementType="point-to-point" onSelect={() => undefined} onCreateWall={() => undefined} onCreateRoom={() => undefined} onCreateStaircase={() => undefined} onPlaceDevice={() => undefined} onCreateRoute={() => false} onCreateRouteJunction={() => undefined} onCreateMeasurement={() => undefined} onAddDevicePort={() => undefined} onReassignRoutePort={() => undefined} onStatus={setStatus} onNotice={setNotice} onNorth={() => setViewCommand({ command: 'front', nonce: Date.now() })} onPlacePhotoMarker={preparePhotoMarker} onOpenPhotoMarker={setOpenPhotoMarkerId} /></main></div> : <div className="workspace-grid"><LeftSidebar project={project} activeFloorId={activeFloorId} tool={tool} selection={selection} placementType={placementType} routeKind={routeKind} routeService={routeService} measurementType={measurementType} visibleServices={visibleServices}
-      onActiveFloor={(id) => { setActiveFloorId(id); setShowAllFloors(false); setSelection(null); setIsolatedRoomId(undefined); }} onTool={chooseTool} onPlacementType={choosePlacementType} onRouteKind={changeRouteKind} onRouteService={setRouteService} onMeasurementType={setMeasurementType}
+    {page === 'overview' ? <OverviewPage project={project} onAddRoomCategory={addRoomCategory} onEditRoomCategory={editRoomCategory} onDeleteRoomCategory={deleteRoomCategory} /> : page === 'light' && lightingAnalysis ? <div className="workspace-grid lighting-workspace"><LightingSidebar floors={project.floors} activeFloorId={activeFloorId} onActiveFloor={(id) => { setActiveFloorId(id); setSelection(null); }} onManageFloors={() => setLevelManagerOpen(true)} /><main className="viewport-column lighting-viewport" onContextMenu={(event) => event.preventDefault()}><HouseViewport project={project} activeFloorId={activeFloorId} selection={selection} tool="select" viewMode="xray" visibleServices={new Set(project.categories.map((category) => category.serviceCategory))} projection={projection} viewCommand={viewCommand} showAllFloors={false} showAdjacentBlueprint={false} cancelToken={cancelToken} sceneTheme={resolvedTheme} lightingMode visibleDeviceIds={lightingDeviceIds} visibleRouteIds={lightingRouteIds} blinkingDeviceIds={blinkingLightingSwitchIds} suppressRouteMotion routeKind="cable" routeService="lighting" onSelect={(next) => { if (!next) { setSelection(null); return; } if (next.type === 'device' && lightingAnalysis.lightIds.includes(next.ids[0])) setSelection(next); }} onCreateWall={() => undefined} onCreateRoom={() => undefined} onCreateStaircase={() => undefined} onPlaceDevice={() => undefined} onCreateRoute={() => false} onCreateRouteJunction={() => undefined} onCreateMeasurement={() => undefined} onAddDevicePort={() => undefined} onReassignRoutePort={() => undefined} onStatus={setStatus} onNotice={setNotice} onNorth={() => setViewCommand({ command: 'front', nonce: Date.now() })} /></main><LightingPanel project={project} activeFloorId={activeFloorId} analysis={lightingAnalysis} selectedLightId={selectedLightId} onSelectLight={(id) => { setSelection({ type: 'device', ids: [id] }); setViewCommand({ command: 'fit-selection', nonce: Date.now() }); }} onLocateIssue={focusLightingItem} /></div> : <div className={`workspace-grid editor-workspace${editorLeftCollapsed ? ' left-panel-collapsed' : ''}${editorRightCollapsed ? ' right-panel-collapsed' : ''}`}>{!editorLeftCollapsed && <LeftSidebar project={project} activeFloorId={activeFloorId} tool={tool} selection={selection} placementType={placementType} routeKind={routeKind} routeService={routeService} visibleServices={visibleServices}
+      onActiveFloor={(id) => { setActiveFloorId(id); setShowAllFloors(false); setSelection(null); setIsolatedRoomId(undefined); }} onTool={chooseTool} onPlacementType={choosePlacementType} onRouteKind={changeRouteKind} onRouteService={setRouteService}
       onUpdateFloor={(id, patch) => commit((current) => ({ ...current, floors: current.floors.map((floor) => floor.id === id ? { ...floor, ...patch } : floor) }))}
       onNewWallLayers={(layers) => commit((current) => { const preferences = { ...current.preferences, ...layers }; return { ...current, preferences: { ...preferences, newWallThicknessMm: preferences.newWallStructuralThicknessMm + preferences.newWallLiningLeftMm + preferences.newWallLiningRightMm } }; })}
       showAllFloors={showAllFloors} onShowAllFloors={setShowAllFloors}
       onToggleService={(service) => setVisibleServices((current) => { const next = new Set(current); next.has(service) ? next.delete(service) : next.add(service); return next; })} onSetAllServices={(visible) => setVisibleServices(visible ? new Set(project.categories.filter((category) => category.serviceCategory !== 'structural').map((category) => category.serviceCategory)) : new Set())}
+      visiblePhotoCategories={visiblePhotoCategories} photoCounts={photoCounts} photoPlacementActive={photoPlacementActive}
+      onTogglePhotoCategory={(category) => setVisiblePhotoCategories((current) => { const next = new Set(current); next.has(category) ? next.delete(category) : next.add(category); return next; })}
+      onSetAllPhotoCategories={(visible) => { setVisiblePhotoCategories(visible ? new Set(PHOTO_CATEGORIES.map((item) => item.id)) : new Set()); if (!visible) setPhotoPlacementActive(false); }} onPhotoPlacementActive={(active) => { if (active && !visiblePhotoCategories.size) setVisiblePhotoCategories(new Set(PHOTO_CATEGORIES.map((item) => item.id))); setPhotoPlacementActive(active); if (active) { setTool('select'); setSelection(null); } }}
       onSelect={select} onManageFloors={() => setLevelManagerOpen(true)} onChooseFurniture={() => setFurnitureOpen(true)} onCreateCustomType={addCustomType} onCreateRoomFromWalls={createRoomFromWalls}
-      onAddRoomCategory={addRoomCategory} onEditRoomCategory={editRoomCategory} onDeleteRoomCategory={deleteRoomCategory} />
+      onAddRoomCategory={addRoomCategory} onEditRoomCategory={editRoomCategory} onDeleteRoomCategory={deleteRoomCategory} />}
       <main ref={viewportRef} className="viewport-column" onContextMenu={(event) => event.preventDefault()}>
-        <HouseViewport project={viewportProject ?? project} activeFloorId={activeFloorId} selection={selection} isolatedRoomId={isolatedRoomId} conflictFocus={activeLayoutIssue ? { floorId: activeLayoutIssue.floorId, point: activeLayoutIssue.focusPoint, solution: !!layoutReview?.solution, label: t('Coordinated route layout') } : activeConflict ? { floorId: project.routes.find((route) => route.id === activeConflict.routeAId)?.floorId ?? activeFloorId, point: activeConflict.point, solution: !!conflictReview?.solution, label: t('Route conflict') } : undefined} tool={tool} viewMode={viewMode} visibleServices={visibleServices} projection={projection} viewCommand={viewCommand} showAllFloors={showAllFloors} showAdjacentBlueprint={showAdjacentBlueprint} cancelToken={cancelToken} sceneTheme={snapshotPreparing ? 'light' : resolvedTheme} suppressSceneLabels={elevation.open || snapshotPreparing || !!snapshotSource}
-          placementType={placementType} routeKind={routeKind} routeService={routeService} measurementType={measurementType} onSelect={select} onCreateWall={createWall} onCreateRoom={createRoom} onCreateStaircase={createStaircase} onPlaceDevice={placeDevice} onCreateRoute={createRoute} onCreateRouteJunction={createRouteJunction} onCreateMeasurement={createMeasurement} onAddDevicePort={addDevicePort} onReassignRoutePort={reassignRoutePort} onStatus={setStatus} onNotice={setNotice} onNorth={() => setViewCommand({ command: 'front', nonce: Date.now() })} />
-        <button className="view-snapshot-button" title="Capture a printable light view" aria-label="Capture current 3D view" disabled={snapshotPreparing} onClick={() => setSnapshotPreparing(true)}><Camera size={17} /></button>
+        <HouseViewport project={viewportProject ?? project} activeFloorId={activeFloorId} selection={workspaceMode === 'edit' ? selection : null} isolatedRoomId={isolatedRoomId} conflictFocus={activeLayoutIssue ? { floorId: activeLayoutIssue.floorId, point: activeLayoutIssue.focusPoint, solution: !!layoutReview?.solution, label: t('Coordinated route layout') } : activeConflict ? { floorId: project.routes.find((route) => route.id === activeConflict.routeAId)?.floorId ?? activeFloorId, point: activeConflict.point, solution: !!conflictReview?.solution, label: t('Route conflict') } : undefined} tool={workspaceMode === 'edit' ? tool : 'select'} viewMode={viewMode} visibleServices={visibleServices} projection={projection} viewCommand={viewCommand} showAllFloors={showAllFloors} showAdjacentBlueprint={showAdjacentBlueprint} cancelToken={cancelToken} sceneTheme={snapshotPreparing ? 'light' : resolvedTheme} suppressSceneLabels={elevation.open || snapshotPreparing || !!snapshotSource} suppressRouteMotion={snapshotPreparing} snapshotMode={snapshotPreparing} snapshotPixelRatio={snapshotPixelRatio}
+          showPhotoMarkers={visiblePhotoCategories.size > 0} photoPlacementActive={workspaceMode === 'edit' && photoPlacementActive} visiblePhotoCategories={visiblePhotoCategories} onPlacePhotoMarker={preparePhotoMarker} onOpenPhotoMarker={setOpenPhotoMarkerId}
+          placementType={placementType} routeKind={routeKind} routeService={routeService} onSelect={workspaceMode === 'edit' ? select : () => undefined} onCreateWall={createWall} onCreateRoom={createRoom} onCreateStaircase={createStaircase} onPlaceDevice={placeDevice} onCreateRoute={createRoute} onCreateRouteJunction={createRouteJunction} onCreateMeasurement={createMeasurement} onAddDevicePort={addDevicePort} onReassignRoutePort={reassignRoutePort} onStatus={setStatus} onNotice={setNotice} onNorth={() => setViewCommand({ command: 'front', nonce: Date.now() })} />
+        {workspaceMode === 'edit' && <><button className={`workspace-panel-toggle left-panel-toggle${editorLeftCollapsed ? '' : ' panel-open'}`} title={t(editorLeftCollapsed ? 'Show creation sidebar' : 'Collapse creation sidebar')} aria-label={t(editorLeftCollapsed ? 'Show creation sidebar' : 'Collapse creation sidebar')} onClick={() => setLeftSidebarCollapsed((current) => !current)}>{editorLeftCollapsed ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}</button><button data-tutorial="properties-toggle" className={`workspace-panel-toggle properties-panel-toggle${editorRightCollapsed ? '' : ' panel-open'}`} disabled={!selection} title={t(!selection ? 'Select an object to open Properties' : editorRightCollapsed ? 'Show Properties' : 'Collapse Properties')} aria-label={t(!selection ? 'Select an object to open Properties' : editorRightCollapsed ? 'Show Properties' : 'Collapse Properties')} onClick={() => selection && setPropertiesPanelCollapsed((current) => !current)}>{editorRightCollapsed ? <PanelRightOpen size={15} /> : <PanelRightClose size={15} />}</button></>}
+        {workspaceMode === 'view' && <div className="view-mode-tools"><div className="view-mode-badge"><ScanEye size={14} /><span>{t('View mode')}</span></div><button className="view-mode-capture" disabled={snapshotPreparing} title={t('Capture current view')} onClick={beginSnapshotCapture}><Camera size={15} /><span>{t(snapshotPreparing ? 'Preparing image…' : 'Capture current view')}</span></button></div>}
         {conflictReview && activeConflict && proposedConflictRoute && <IntersectionModelReview index={conflictReview.index} count={conflictReview.items.length} item={activeConflict} solution={conflictReview.solution} clearanceMm={project.preferences.routeSeparationMm[proposedConflictRoute.serviceCategory] ?? 30} onToggleSolution={() => { const solution = !conflictReview.solution; setConflictReview({ ...conflictReview, solution }); focusIntersection(activeConflict, solution); }} onNext={advanceIntersectionReview} onApply={() => { commit((current) => ({ ...current, routes: current.routes.map((route) => route.id === proposedConflictRoute.id ? proposedConflictRoute : route) })); advanceIntersectionReview(); }} onClose={closeIntersectionReview} />}
         {layoutReview && activeLayoutIssue && <RouteLayoutModelReview index={layoutReview.index} count={layoutReview.items.length} item={activeLayoutIssue} solution={layoutReview.solution} onToggleSolution={() => { const solution = !layoutReview.solution; setLayoutReview({ ...layoutReview, solution }); focusRouteLayout(activeLayoutIssue, solution); }} onNext={advanceRouteLayoutReview} onApply={() => { const replacements = new Map(activeLayoutIssue.proposedRoutes.map((route) => [route.id, route])); commit((current) => ({ ...current, routes: current.routes.map((route) => replacements.get(route.id) ?? route) })); setNotice(t('Coordinated route layout applied.')); closeRouteLayoutReview(); }} onClose={closeRouteLayoutReview} />}
       </main>
-      <PropertiesPanel project={project} selection={selection} locked={selectedLocked} onSetLocked={setSelectionLocked} onUpdateWall={updateWall} onUpdateRoom={updateRoom} onUpdateDevice={updateDevice} onUpdateRoute={updateRoute} onUpdateMeasurement={updateMeasurement} onDelete={deleteSelection} onDuplicate={duplicateSelection} onOpenElevation={() => setElevation({ open: true, batch: false })} />
+      {!editorRightCollapsed && <PropertiesPanel project={project} selection={selection} locked={selectedLocked} onSetLocked={setSelectionLocked} onUpdateWall={updateWall} onUpdateRoom={updateRoom} onUpdateDevice={updateDevice} onUpdateRoute={updateRoute} onUpdateMeasurement={updateMeasurement} onDelete={deleteSelection} onDuplicate={duplicateSelection} onOpenElevation={() => setElevation({ open: true, batch: false })} />}
     </div>}
-    <footer className="status-bar"><span>XYZ <strong>{(status.x / 1000).toFixed(2)}, {(status.z / 1000).toFixed(2)}, {(status.y / 1000).toFixed(2)} m</strong></span><span>{t('Tool')} <strong>{tool}</strong></span><span>{t('Room')} <strong>{selectedRoomName}</strong></span><span>{t('Grid')} <strong>{(project.preferences.gridSizeMm / 1000).toFixed(2)} m</strong></span><span>{t('Snapping')} <strong>{project.preferences.snapToGrid || project.preferences.snapToEndpoints ? 'ON' : 'OFF'}</strong></span><span className="status-notice">{notice}</span></footer>
+    <footer className="status-bar"><span>XYZ <strong>{(status.x / 1000).toFixed(2)}, {(status.z / 1000).toFixed(2)}, {(status.y / 1000).toFixed(2)} m</strong></span><span>{t('Tool')} <strong>{tool}</strong></span><span>{t('Room')} <strong>{selectedRoomName}</strong></span><span>{t('Grid')} <strong>{(project.preferences.gridSizeMm / 1000).toFixed(2)} m</strong></span><span>{t('Snapping')} <strong>{project.preferences.snapToGrid || project.preferences.snapToEndpoints ? 'ON' : 'OFF'}</strong></span><span className="status-notice">{notice}</span><span className="status-last-edit">{t('Last edit')} <strong>{lastEditLabel}</strong></span></footer>
     {elevation.open && <ElevationDialog project={project} selectedWallId={selectedWallId} batch={elevation.batch} onClose={() => setElevation({ open: false, batch: false })} />}
-    {snapshotSource && <ViewSnapshotDialog source={snapshotSource} projectName={project.title} floorName={project.floors.find((floor) => floor.id === activeFloorId)?.name ?? 'House'} onClose={() => setSnapshotSource(undefined)} />}
+    {snapshotSource && <ViewSnapshotDialog source={snapshotSource} projectName={project.title} floorName={showAllFloors ? t('Full house view') : project.floors.find((floor) => floor.id === activeFloorId)?.name ?? 'House'} northAngleRad={snapshotNorthAngleRad} onClose={() => setSnapshotSource(undefined)} />}
     {settingsOpen && <SettingsDialog project={project} appIconUrl={appIconUrl} onApplicationIconFile={async (file) => { const next = await readLocalAppIcon(file); saveLocalAppIcon(next); setAppIconUrl(next); }} onResetApplicationIcon={() => setAppIconUrl(resetLocalAppIcon())} routeLayoutIssues={routeLayoutIssues} onChange={(patch) => commit((current) => { const next = { ...current, ...patch }; if (!patch.preferences) return next; return { ...next, routes: next.floors.reduce((routes, floor) => stackFloorRoutes(routes, floor.id, next.preferences.floorRouteOffsetMm, next.preferences.routeVerticalOrder, next.preferences.routeSeparationMm), next.routes) }; })} onReviewIntersections={startIntersectionReview} onReviewRouteLayout={startRouteLayoutReview} onFocusDevice={(deviceId) => { const device = project.devices.find((item) => item.id === deviceId); if (!device) return; setSettingsOpen(false); setPage('editor'); setActiveFloorId(device.floorId); setShowAllFloors(false); setViewMode('xray'); setSelection({ type: 'device', ids: [device.id] }); setViewCommand({ command: 'fit-selection', nonce: Date.now() }); }} onFocusRoute={(routeId) => { const route = project.routes.find((item) => item.id === routeId); if (!route) return; setSettingsOpen(false); setPage('editor'); setActiveFloorId(route.floorId); setShowAllFloors(false); setViewMode('xray'); setSelection({ type: 'route', ids: [route.id] }); setViewCommand({ command: 'fit-selection', nonce: Date.now() }); }} onClose={() => setSettingsOpen(false)} />}
     {levelManagerOpen && <LevelManagerDialog floors={project.floors} activeFloorId={activeFloorId} showAdjacentBlueprint={showAdjacentBlueprint} onShowAdjacentBlueprint={setShowAdjacentBlueprint} onActiveFloor={(id) => { setActiveFloorId(id); setSelection(null); setIsolatedRoomId(undefined); }} onUpdate={(id, patch) => commit((current) => ({ ...current, floors: current.floors.map((floor) => floor.id === id ? { ...floor, ...patch } : floor) }))} onAdd={addFloor} onDelete={deleteFloor} onReorder={reorderFloor} onNotice={setNotice} onClose={() => setLevelManagerOpen(false)} />}
     {furnitureOpen && <FurnitureDialog types={project.deviceTypes.filter((type) => type.family === 'furniture')} onClose={() => setFurnitureOpen(false)} onChoose={(type) => { setPlacementType(type); setTool('structure'); setFurnitureOpen(false); }} />}

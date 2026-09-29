@@ -1,7 +1,7 @@
 {
   "name": "house-infrastructure-studio",
   "private": true,
-  "version": "0.2.11",
+  "version": "0.3.0",
   "description": "Local-only 3D residential infrastructure and MEP documentation editor.",
   "license": "MIT",
   "author": "Luigi Casagrande",
@@ -30,6 +30,7 @@
     "test:watch": "vitest",
     "db:path": "tsx server/db-path.ts",
     "db:reset": "tsx server/reset-db.ts",
+    "routes:rebuild": "tsx scripts/rebuild-routes.ts",
     "tauri": "tauri",
     "desktop:prepare": "node scripts/prepare-desktop.mjs",
     "desktop:dev": "npm run desktop:prepare && tauri dev",

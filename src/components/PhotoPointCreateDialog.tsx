@@ -2,7 +2,7 @@ import { Camera, X } from 'lucide-react';
 import { useState } from 'react';
 import type { PhotoCategory, Vec3 } from '../../shared/types';
 import { useI18n } from '../lib/i18n';
-import { PHOTO_CATEGORIES } from './PhotoSidebar';
+import { PHOTO_CATEGORIES } from '../lib/photos';
 
 interface Props {
   position: Vec3;

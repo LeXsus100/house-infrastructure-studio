@@ -61,7 +61,7 @@ documentation/
   authored documentation contains no em dash characters.
 - Keep visual examples close to the feature they explain. Reserved media slots
   may be replaced with a PNG, WebP, or animated GIF under `assets/media/`.
-- Update capabilities, architecture, database, security, privacy, and release
+- Update features, architecture, database, security, privacy, and release
   instructions when a code change affects their guarantees.
 - Run `npm run docs:build` before committing documentation changes.
 
