@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Device, Route, Wall } from '../shared/types';
-import { addVerticalClearanceAtCrossings, alignRouteToSharedElevation, batchExportFilename, ceilingRouteHeight, cmToMm, confineRouteToAssociatedWalls, constrainRoutePointToWallLining, devicePortWorldPosition, deviceSafeTerminalLead, drywallAreaMm2, findRouteIntersections, floorRouteHeight, isAutomaticRoutePoint, mmToCm, mmToM, mToMm, mountingFaceOffset, mountingRotation, offsetPolylineCorner, openingPlanGeometry, optimizeRouteControlPoints, orderWallBoundary, orderWallBoundaryWithGaps, orthogonalizeWallRoutePoints, polygonArea, polygonEdgesCross, preferredOrthogonalPlaneRoute, preferSharedWallRoute, projectDevicePositionOntoWall, projectWallDrawingHitToCenterline, proposeRouteClearanceSolution, reattachDeviceToWall, reattachRouteEndpointsToDevice, resolveRouteConflicts, restoreLegacyAutomaticClearancePoints, roundedRoutePoints, routeCloseTurnSpacingPenalty, routeDisplayDiameterMm, routeLength, routePlanarBendRadiusDeficit, routeSegmentAvoidsOpenings, routeSegmentCrossesDeviceBody, routeSegmentDetourOpenings, routeSegmentsOnWall, routeSurfaceBounds, routeTurnCount, routeUsesTubeRendering, separateCoincidentRoute, shortestWallRoute, simplifyRoutePoints, stackFloorRoutes, verticalTransitionBounds, wallAtPlanPoint, wallBackFaceRecessMm, wallCenterDepthForBackFaceRecess, wallDrawingSnap, wallLength, wallLocalToWorld, wallMountedPosition, wallRenderEndProfiles, wallRoutePathLength, wallRouteTurnCount, wallServiceDepthMm, worldToWallLocal } from '../src/lib/geometry';
+import { addVerticalClearanceAtCrossings, alignRouteToSharedElevation, batchExportFilename, ceilingRouteHeight, cmToMm, confineRouteToAssociatedWalls, constrainRoutePointToWallLining, devicePortWorldPosition, deviceRouteEndpointWorldPosition, deviceSafeTerminalLead, drywallAreaMm2, findRouteIntersections, floorRouteHeight, gradeRoutePlanePath, gradeRoutePlaneSurfaces, isAutomaticRoutePoint, mmToCm, mmToM, mToMm, mountingFaceOffset, mountingRotation, offsetPolylineCorner, openingPlanGeometry, optimizeRouteControlPoints, orderWallBoundary, orderWallBoundaryWithGaps, orthogonalizeWallRoutePoints, polygonArea, polygonEdgesCross, preferredDirectPlaneRoute, preferredOrthogonalPlaneRoute, preferSharedWallRoute, projectDevicePositionOntoWall, projectWallDrawingHitToCenterline, proposeRouteClearanceSolution, reattachDeviceToWall, reattachRouteEndpointsToDevice, resolveRouteConflicts, restoreLegacyAutomaticClearancePoints, roundedRoutePoints, routeCloseTurnSpacingPenalty, routeDisplayDiameterMm, routeLength, routePlanarBendRadiusDeficit, routeSegmentAvoidsOpenings, routeSegmentCrossesDeviceBody, routeSegmentDetourOpenings, routeSegmentsOnWall, routeSurfaceBounds, routeTurnCount, routeUsesTubeRendering, separateCoincidentRoute, shortestWallRoute, simplifyRoutePoints, stackFloorRoutes, verticalTransitionBounds, wallAtPlanPoint, wallBackFaceRecessMm, wallCenterDepthForBackFaceRecess, wallDrawingSnap, wallLength, wallLocalToWorld, wallMountedPosition, wallRenderEndProfiles, wallRoutePathLength, wallRouteTurnCount, wallServiceDepthMm, worldToWallLocal } from '../src/lib/geometry';
 import { isNumericDraft, parseNumericDraft } from '../src/lib/numericDraft';
 import { buildPolylinePath, routeDirectionMarkerDistances, samplePolylinePath } from '../src/lib/polyline';
 
@@ -145,6 +145,43 @@ describe('metric geometry', () => {
     expect(arc.every((point) => Math.abs(Math.hypot(point.x - 800, point.z - 200) - 200) <= 2)).toBe(true);
   });
 
+  it('uses a direct shortest path on open floor and ceiling planes', () => {
+    const direct = preferredDirectPlaneRoute({ x: 0, y: -150, z: 0 }, { x: 3000, y: -150, z: 4000 }, -150);
+    expect(direct).toEqual([{ x: 0, y: -150, z: 0 }, { x: 3000, y: -150, z: 4000 }]);
+    expect(routeLength({ points: direct as Route['points'] })).toBe(5000);
+    const detour = preferredDirectPlaneRoute(direct[0], direct[1], -150, [{ minX: 1300, maxX: 1700, minZ: 1800, maxZ: 2200 }], 500);
+    expect(detour.length).toBeGreaterThan(2);
+    expect(routeLength({ points: detour as Route['points'] })).toBeGreaterThan(5000);
+  });
+
+  it('grades pipe and duct plane runs downward with flow while leaving cables level', () => {
+    const bounds = { floorMinimumY: -500, floorMaximumY: 0, ceilingMinimumY: 2700, ceilingMaximumY: 3000 };
+    const line = [{ x: 0, y: -150, z: 0 }, { x: 10_000, y: -150, z: 0 }];
+    const pipe = gradeRoutePlanePath(line, 'pipe', 10, false, 'floor', bounds, 20);
+    expect(pipe[0].y).toBe(-150); expect(pipe[1].y).toBe(-250);
+    const reversed = gradeRoutePlanePath(line, 'duct', 5, true, 'floor', bounds, 20);
+    expect(reversed[0].y).toBe(-200); expect(reversed[1].y).toBe(-150);
+    expect(gradeRoutePlanePath(line, 'cable', 10, false, 'floor', bounds, 20)).toEqual(line);
+    const ceiling = gradeRoutePlanePath([{ x: 0, y: 2750, z: 0 }, { x: 10_000, y: 2750, z: 0 }], 'duct', 5, false, 'ceiling', bounds, 20);
+    expect(ceiling[0].y).toBe(2800); expect(ceiling[1].y).toBe(2750);
+  });
+
+  it('grades only concealed plane controls and preserves exact device endpoints', () => {
+    const points = [{ x: 0, y: 900, z: 0 }, { x: 0, y: -150, z: 0 }, { x: 5000, y: -150, z: 0 }, { x: 5000, y: 1200, z: 0 }];
+    const graded = gradeRoutePlaneSurfaces(points, ['wall','floor','floor','wall'], 'pipe', 10, false, { floorMinimumY: -500, floorMaximumY: 0, ceilingMinimumY: 2700, ceilingMaximumY: 3000 }, 20);
+    expect(graded[0]).toEqual(points[0]); expect(graded.at(-1)).toEqual(points.at(-1));
+    expect(graded[1].y).toBe(-150); expect(graded[2].y).toBe(-200);
+  });
+
+  it('keeps pipe and duct wall plans square while preserving their shallow gravity grade', () => {
+    const host = { ...wall('graded-wall', 0, 0, 10_000, 0), thicknessMm: 300 };
+    const points = [{ x: 0, y: 1200, z: 0 }, { x: 100, y: 1000, z: 0 }, { x: 9900, y: 1000, z: 0 }, { x: 10_000, y: 800, z: 0 }];
+    const graded = gradeRoutePlaneSurfaces(points, [host.id, host.id, host.id, host.id], 'pipe', 10, false, { floorMinimumY: -500, floorMaximumY: 0, ceilingMinimumY: 2700, ceilingMaximumY: 3000 }, 20, [host]);
+    expect(graded[0]).toEqual(points[0]); expect(graded.at(-1)).toEqual(points.at(-1)); expect(graded[2].y).toBeLessThan(graded[1].y);
+    const preserved = orthogonalizeWallRoutePoints(graded.slice(1, 3), [host], true); expect(preserved).toHaveLength(2);
+    const squared = orthogonalizeWallRoutePoints(graded.slice(1, 3), [host]); expect(squared).toHaveLength(3);
+  });
+
   it('rounds authored ceiling corners beside automatic crossing geometry', () => {
     const points = [
       { id: 'start', order: 0, x: 0, y: 2750, z: 0 },
@@ -188,6 +225,35 @@ describe('metric geometry', () => {
     expect(routeCloseTurnSpacingPenalty(optimized, 240)).toBe(0);
     expect(routePlanarBendRadiusDeficit(optimized, 120, bounds)).toBe(0);
     expect(roundedRoutePoints(optimized.points, 120).length).toBeGreaterThan(optimized.points.length);
+  });
+
+  it('removes a redundant short lane connector before rendering the configured bend radius', () => {
+    const bounds = { floorMinimumY: -300, floorMaximumY: 0, ceilingMinimumY: 2700, ceilingMaximumY: 3000 };
+    const route = { id: 'DA-F1-close-bends', floorId, name: 'DA-F1-close-bends', kind: 'cable', serviceCategory: 'data', wallIds: [], points: [
+      { id: 'p0', order: 0, x: 1175, y: 2355, z: 4872 },
+      { id: 'p1', order: 1, x: 1250, y: 2355, z: 4872 },
+      { id: 'p2', order: 2, x: 1250, y: 2750, z: 4872 },
+      { id: 'p3', order: 3, x: -3005, y: 2750, z: 3550 },
+      { id: 'p4', order: 4, x: -2975, y: 2750, z: 3550 },
+      { id: 'hill', order: 5, x: -2975, y: 1400, z: 3550, automatic: 'crossing-clearance' as const },
+      { id: 'p5', order: 6, x: -2975, y: 453, z: 3550 },
+      { id: 'p6', order: 7, x: -3030, y: 463, z: 3600 }
+    ] } as unknown as Route;
+    const optimized = optimizeRouteControlPoints(route, [], {}, { data: 30 }, { data: 8 }, 120, bounds, [], 1500);
+    expect(optimized.points.some((point) => point.id === 'p3')).toBe(false);
+    expect(routeCloseTurnSpacingPenalty(optimized, 240)).toBeLessThan(routeCloseTurnSpacingPenalty(route, 240));
+    expect(roundedRoutePoints(optimized.points, 120).length).toBeGreaterThan(optimized.points.length);
+
+    const junction = { id: 'junction', typeId: 'junction-box', position: { x: -3030, y: 463, z: 3600 }, dimensions: { width: 160, height: 160, depth: 70 } } as Device;
+    const terminalRoute = { ...route, destinationDeviceId: junction.id, points: [
+      { id: 'wall-top', order: 0, x: -2975, y: 2750, z: 3550 },
+      { id: 'wall-run', order: 1, x: -2975, y: 463, z: 3550 },
+      { id: 'short-shell-turn', order: 2, x: -3005, y: 463, z: 3550 },
+      { id: 'centre', order: 3, ...junction.position }
+    ] } as Route;
+    const terminalOptimized = optimizeRouteControlPoints(terminalRoute, [], {}, { data: 30 }, { data: 8 }, 120, bounds, [junction], 1500);
+    expect(terminalOptimized.points.some((point) => point.id === 'short-shell-turn')).toBe(false);
+    expect(terminalOptimized.points.at(-1)).toMatchObject(junction.position);
   });
 
   it('enforces wall-local horizontal or vertical runs while preserving diagonal floor and ceiling spans', () => {
@@ -369,6 +435,9 @@ describe('metric geometry', () => {
     const leftSide = { position: { x: 1000, y: 1100, z: 100 }, rotationDeg: mountingRotation('back', 'wall', mountingWall, 'left') } as Device;
     const rightSide = { position: { x: 1000, y: 1100, z: -100 }, rotationDeg: mountingRotation('back', 'wall', mountingWall, 'right') } as Device;
     expect(devicePortWorldPosition(leftSide, backPort).z).toBe(60); expect(devicePortWorldPosition(rightSide, backPort).z).toBe(-60);
+    const junction = { ...device, id: 'junction', typeId: 'junction-box' } as Device;
+    expect(deviceRouteEndpointWorldPosition(junction, port)).toEqual(junction.position);
+    expect(deviceRouteEndpointWorldPosition(device, port)).toEqual(devicePortWorldPosition(device, port));
   });
 
   it('approaches an exposed port by the shortest lead that does not cross the device body', () => {
@@ -509,6 +578,16 @@ describe('metric geometry', () => {
     const clustered = addVerticalClearanceAtCrossings([{ x: 1500, y: 700, z: -1000 }, { x: 1500, y: 700, z: 1000 }], [existing, nearby], 40, 100, 2600);
     expect(clustered.slice(1).every((point, index) => point.z >= clustered[index].z)).toBe(true);
     expect(clustered.filter((point) => Math.abs(point.z) <= 5 || Math.abs(point.z - 180) <= 5).every((point) => point.y >= 740)).toBe(true);
+  });
+
+  it('adds a smooth clearance hill on a gravity-graded baseline', () => {
+    const existing = { id: 'existing-graded', floorId, name: 'Existing', kind: 'pipe', serviceCategory: 'plumbing', wallIds: [], points: [{ id: 'e0', order: 0, x: 0, y: -190, z: -1000 }, { id: 'e1', order: 1, x: 0, y: -210, z: 1000 }] } as unknown as Route;
+    const graded = [{ x: -2000, y: -180, z: 0 }, { x: 2000, y: -220, z: 0 }];
+    const cleared = addVerticalClearanceAtCrossings(graded, [existing], 40, -500, 0, { bendRadiusMm: 150, diameterMm: 20, surfaceBounds: { floorMinimumY: -500, floorMaximumY: 0, ceilingMinimumY: 2700, ceilingMaximumY: 3000 } });
+    expect(cleared.filter(isAutomaticRoutePoint).length).toBeGreaterThan(8);
+    expect(cleared[0]).toEqual(graded[0]); expect(cleared.at(-1)).toEqual(graded[1]);
+    const automatic = cleared.filter(isAutomaticRoutePoint);
+    expect(Math.max(...automatic.map((point) => point.y))).toBeGreaterThan(-170);
   });
 
   it('preserves a smooth in-slab floor crossing hill when the service stack is reapplied', () => {

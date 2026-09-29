@@ -40,7 +40,8 @@ service relationships, and installation intent throughout the model.
 Review Settings before creating many objects:
 
 - route tiers and their vertical spacing;
-- cable, pipe, and duct order and clearances;
+- cable, pipe, and duct order, clearances, installed sizes, turn curvature, and
+  pipe/duct gravity grades;
 - project naming conventions;
 - category and service display colors;
 - default device/furniture sizes and mounting backs;
@@ -59,10 +60,11 @@ an existing route before using its physical port for another connection.
 
 ## 5. Route one service at a time
 
-Create cables, pipes, and ducts from known endpoints. Add route points only
-where geometry or installation intent changes. Review service type, physical
-width, route tier, line pattern, conductor or pair metadata, and installation
-date as appropriate.
+Create cables, pipes, and ducts from known endpoints. Add guidance points where
+geometry or installation intent changes, then let the planner coordinate valid
+wall, floor, ceiling, and transition surfaces. Review service type, physical
+width, route tier, gravity grade, flow, line pattern, conductor or pair
+metadata, and installation date as appropriate.
 
 Use riser links for one-to-one same-service continuity between floors. Panel
 and junction correspondences document logical relationships across separate
@@ -85,10 +87,10 @@ change atomically.
 
 ## 7. Document what will be hidden
 
-Use the Photo view and X-ray state to place local installation photographs in
-context. Add installation metadata before surfaces are closed. Generate wall
-elevations and current-view snapshots while the physical installation can still
-be verified.
+Use the Photos controls inside the Services popup to place categorized local
+installation photographs in context. Add installation metadata before surfaces
+are closed. Generate wall schemes and current-view sheets while the physical
+installation can still be verified.
 
 ## 8. Save, back up, and review
 
@@ -96,3 +98,5 @@ Autosave writes after an 800 ms quiet period; explicit Save follows the same
 validated transaction path. Export a JSON backup at meaningful milestones and
 keep a separate copy. Before field use, review the whole-house overview,
 inventory, room/zone organization, diagnostics, and elevations.
+
+The [Features](../features/index.md) section explains each workspace in detail.

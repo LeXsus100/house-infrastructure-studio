@@ -163,6 +163,9 @@ describe('infrastructure planning extensions', () => {
     expect(Math.abs(port.position.x)).toBeLessThan(grown.width / 2);
     expect(Math.abs(port.position.y)).toBeLessThan(grown.height / 2);
     expect(Math.abs(port.position.z)).toBeLessThan(grown.depth / 2);
+    const installed = { id: 'large-circuit', kind: 'cable', serviceCategory: 'security', sourceDeviceId: junction.id, sourcePortId: port.id, conduit: { diameterMm: 100 } } as Route;
+    const fitted = dimensionsForDevicePorts(junction, type, [...junction.ports, port], [installed], { security: 6 });
+    expect(fitted.width).toBeGreaterThan(grown.width);
   });
 
   it('flags cable runs only after the 10 m target plus 1 m tolerance', () => {

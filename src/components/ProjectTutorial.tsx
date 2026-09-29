@@ -54,12 +54,13 @@ export function ProjectTutorial({ projectId }: { projectId: string }) {
     { selector: '.brand', title: t('Welcome to the infrastructure editor'), description: t('This short tour shows the main areas. Everything in the project stays on this computer.') },
     { selector: '.floor-switcher', title: t('Levels and blueprints'), description: t('Switch level here, open the level manager, and calibrate blueprint underlays before drawing.') },
     { selector: '.tool-grid', title: t('Creation tools'), description: t('Create walls, rooms, structures, devices, routes, containers, and measurements from this area.') },
+    { selector: '.sidebar-browser-launcher', title: t('Rooms and service filters'), description: t('Open these compact browsers for rooms, service visibility, and local photo documentation points.') },
     { selector: '.viewport-column', title: t('3D workspace'), description: t('Draw and select in the model. Orbit with right drag, pan with middle drag, and zoom with the wheel.') },
-    { selector: '.properties-panel', title: t('Properties and dimensions'), description: t('The selected wall, device, route, room, or measurement is edited precisely in this panel.') },
+    { selector: '[data-tutorial="properties-toggle"]', title: t('Properties and dimensions'), description: t('Selecting an object opens Properties automatically. Use this small control to collapse or restore the panel.') },
     { selector: '.overview-nav', title: t('Project overview'), description: t('Open the complete project report with quantities, route inventory, rooms, assets, and interactive summaries.') },
     { selector: '.light-nav', title: t('Lighting view'), description: t('Inspect light points, switches, and their documented cable continuity on the active level.') },
-    { selector: '.photo-nav', title: t('Photo documentation'), description: t('Place categorized photo points in the model and keep local installation pictures with the project.') },
     { selector: '.settings-nav', title: t('Project rules'), description: t('Settings contains route planning, bend radii, clearances, appearance, device defaults, and project diagnostics.') },
+    { selector: '[data-tutorial="workspace-mode"]', title: t('Edit and view workspaces'), description: t('Edit enables creation and properties. View hides both sidebars and keeps the model navigation-only.') },
     { selector: '.xray-toggle', title: t('Inspect concealed services'), description: t('X-ray makes structures transparent and enables route selection. Press X to toggle it quickly.') },
     { selector: '[data-tutorial="2d-view"]', title: t('2D plan view'), description: t('Toggle a fixed orthographic top view for precise plan editing, then switch it off to return to 3D perspective.') }
   ], [t]);

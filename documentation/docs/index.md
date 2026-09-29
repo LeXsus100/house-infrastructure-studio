@@ -20,7 +20,7 @@ hide:
     </p>
     <div class="his-blueprint-home__actions">
       <a class="his-blueprint-home__action his-blueprint-home__action--primary" href="getting-started/">Get started</a>
-      <a class="his-blueprint-home__action" href="reference/capabilities/">Explore capabilities</a>
+      <a class="his-blueprint-home__action" href="features/">Explore features</a>
     </div>
   </div>
 

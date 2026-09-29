@@ -210,20 +210,20 @@ For public Authenticode signing, use a certificate or managed signing service wh
 
 ## 9. Create a GitHub Release manually
 
-Assign every published release a new semantic version and tag. Example for
-`0.2.0`:
+Assign every published release a new semantic version and tag. The current
+release documented here is `0.3.0`:
 
 ```powershell
-npm run version:set -- 0.2.0
+npm run version:set -- 0.3.0
 npm test
 npm run build
 npm run desktop:build
 git diff
 git add package.json package-lock.json src-tauri/Cargo.toml src-tauri/tauri.conf.json
-git commit -m "Release 0.2.0"
+git commit -m "Release 0.3.0"
 git push origin main
-git tag -a v0.2.0 -m "House Infrastructure Studio 0.2.0"
-git push origin v0.2.0
+git tag -a v0.3.0 -m "House Infrastructure Studio 0.3.0"
+git push origin v0.3.0
 ```
 
 The tag push starts `.github/workflows/release.yml`. The official Tauri action
@@ -244,8 +244,12 @@ powershell -File .\verify-release.ps1 -InstallerPath '.\downloaded-installer.exe
 6. Click **Publish release** only when satisfied. Publication starts `.github/workflows/docs.yml`, which builds the same tagged documentation snapshot and deploys it to GitHub Pages.
 
 Keep a draft unpublished when its build or test needs correction. Fix the source
-and use a new patch version/tag such as `v0.2.1`; unique release tags keep
+and use a new patch version/tag such as `v0.3.1`; unique release tags keep
 downloads auditable.
+
+Before tagging, confirm that the Release history page identifies the version
+being published as the current release, with the correct date and notes. After
+publication, verify its GitHub Release link and the deployed documentation.
 
 ## 10. If sensitive information is staged or published
 

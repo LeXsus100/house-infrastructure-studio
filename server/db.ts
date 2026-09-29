@@ -4,6 +4,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ProjectSnapshot } from '../shared/types';
 
+const RETIRED_DEVICE_TYPE_IDS = new Set(['video-intercom']);
 const serverDir = dirname(fileURLToPath(import.meta.url));
 export const defaultDatabasePath = process.env.HOUSE_INFRASTRUCTURE_DB_PATH || process.env.CASA_DB_PATH || join(serverDir, '..', '.data', 'casa.sqlite');
 const migrationsDir = process.env.HOUSE_INFRASTRUCTURE_MIGRATIONS_DIR || join(serverDir, 'migrations');
@@ -63,7 +64,7 @@ export class ProjectRepository {
     const rows = this.db.prepare('SELECT id, definition_json FROM global_device_type_defaults').all() as Array<{ id: string; definition_json: string }>;
     return new Map(rows.flatMap((row) => {
       const definition = parse<ProjectSnapshot['deviceTypes'][number] | null>(row.definition_json, null);
-      return definition && definition.id === row.id && !definition.custom ? [[row.id, definition] as const] : [];
+      return definition && definition.id === row.id && !definition.custom && !RETIRED_DEVICE_TYPE_IDS.has(row.id) ? [[row.id, definition] as const] : [];
     }));
   }
 
@@ -79,10 +80,11 @@ export class ProjectRepository {
   }
 
   private saveGlobalDeviceTypes(deviceTypes: ProjectSnapshot['deviceTypes'], now: string, onlyMissing: boolean) {
+    RETIRED_DEVICE_TYPE_IDS.forEach((id) => this.db.prepare('DELETE FROM global_device_type_defaults WHERE id = ?').run(id));
     const statement = this.db.prepare(onlyMissing
       ? 'INSERT OR IGNORE INTO global_device_type_defaults (id,definition_json,updated_at) VALUES (?,?,?)'
       : 'INSERT INTO global_device_type_defaults (id,definition_json,updated_at) VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET definition_json=excluded.definition_json, updated_at=excluded.updated_at');
-    deviceTypes.filter((item) => !item.custom).forEach((item) => statement.run(item.id, json({ ...item, custom: false }), now));
+    deviceTypes.filter((item) => !item.custom && !RETIRED_DEVICE_TYPE_IDS.has(item.id)).forEach((item) => statement.run(item.id, json({ ...item, custom: false }), now));
   }
 
   list() {

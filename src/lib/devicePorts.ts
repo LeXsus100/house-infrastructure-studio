@@ -1,12 +1,38 @@
-import type { Device, DevicePort, DeviceType, RouteKind, ServiceCategory } from '../../shared/types';
+import type { Device, DevicePort, DeviceType, Route, RouteKind, ServiceCategory } from '../../shared/types';
 
-/** Expands an unlimited-port enclosure to reserve the configured face area of every termination. */
-export function dimensionsForDevicePorts(device: Device, type: DeviceType, ports = device.ports): Device['dimensions'] {
+function installedRouteSpaceMm(route: Route, defaults: Partial<Record<ServiceCategory, number>>): number {
+  if (route.kind === 'pipe') return Math.max(route.pipe?.externalDiameterMm ?? 0, defaults[route.serviceCategory] ?? 0);
+  if (route.kind === 'duct') return Math.max(route.duct?.diameterMm ?? 0, route.duct?.widthMm ?? 0, route.duct?.heightMm ?? 0, defaults[route.serviceCategory] ?? 0);
+  return Math.max(route.conduit?.diameterMm ?? 0, defaults[route.serviceCategory] ?? 0);
+}
+
+/** Expands an unlimited-port enclosure to reserve the configured area of every installed termination. */
+export function dimensionsForDevicePorts(
+  device: Device,
+  type: DeviceType,
+  ports = device.ports,
+  routes: Route[] = [],
+  defaultRouteDiameters: Partial<Record<ServiceCategory, number>> = {}
+): Device['dimensions'] {
   if (!type.unlimitedPorts) return device.dimensions;
-  const padding = 40; const area = ports.reduce((sum, port) => sum + Math.max(10, port.spaceRequiredMm ?? type.defaultPortSpaceMm ?? 30) ** 2, 0);
+  const connectedSpace = new Map<string, number>(); let unassignedConnections = 0;
+  routes.forEach((route) => {
+    const portId = route.sourceDeviceId === device.id ? route.sourcePortId : route.destinationDeviceId === device.id ? route.destinationPortId : undefined;
+    if (!portId) { if (route.sourceDeviceId === device.id || route.destinationDeviceId === device.id) unassignedConnections++; return; }
+    connectedSpace.set(portId, Math.max(connectedSpace.get(portId) ?? 0, installedRouteSpaceMm(route, defaultRouteDiameters) + 10));
+  });
+  const fallbackSpace = Math.max(10, type.defaultPortSpaceMm ?? 30); const terminationSpaces = ports.map((port) => Math.max(10, port.spaceRequiredMm ?? fallbackSpace, connectedSpace.get(port.id) ?? 0));
+  for (let index = 0; index < unassignedConnections; index++) terminationSpaces.push(fallbackSpace);
+  const padding = 40; const area = terminationSpaces.reduce((sum, space) => sum + space ** 2, 0);
   const aspect = Math.max(.35, type.defaultDimensions.width / Math.max(1, type.defaultDimensions.height));
   const requiredWidth = Math.ceil(Math.sqrt(area * aspect) + padding); const requiredHeight = Math.ceil(Math.sqrt(area / aspect) + padding);
-  return { width: Math.max(type.defaultDimensions.width, requiredWidth), height: Math.max(type.defaultDimensions.height, requiredHeight), depth: Math.max(device.dimensions.depth, type.defaultDimensions.depth) };
+  const coordinateWidth = ports.reduce((required, port, index) => Math.max(required, (Math.abs(port.position?.x ?? 0) + terminationSpaces[index] / 2 + padding / 4) * 2), 0);
+  const coordinateHeight = ports.reduce((required, port, index) => Math.max(required, (Math.abs(port.position?.y ?? 0) + terminationSpaces[index] / 2 + padding / 4) * 2), 0);
+  return {
+    width: Math.max(type.defaultDimensions.width, requiredWidth, Math.ceil(coordinateWidth)),
+    height: Math.max(type.defaultDimensions.height, requiredHeight, Math.ceil(coordinateHeight)),
+    depth: Math.max(device.dimensions.depth, type.defaultDimensions.depth)
+  };
 }
 
 export function supportsAutomaticCablePorts(type: DeviceType, routeKind: RouteKind): boolean {

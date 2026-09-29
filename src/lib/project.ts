@@ -2,7 +2,7 @@ import type { DevicePort, DevicePortTemplate, ProjectSnapshot } from '../../shar
 import { categoryIdForService, consolidatedServiceCategory, DEFAULT_CATEGORIES, DEFAULT_DEVICE_TYPES } from '../catalog';
 import { defaultDeviceDisplayColor, ETHERNET_PAIR_COLORS, ITALIAN_CONDUCTOR_COLORS, PROJECT_SERVICE_COLORS } from './italianColors';
 import { formatRouteName } from './routeNaming';
-import { ceilingRouteHeight, confineRouteToAssociatedWalls, devicePlanObstacle, distance3, floorRouteHeight, isAutomaticRoutePoint, mountingRotation, preferredOrthogonalPlaneRoute, resolveRouteConflicts, restoreLegacyAutomaticClearancePoints, routePointsKeepDeviceClearance, routeSegmentAvoidsOpenings, routeSegmentsOnWall, routeSurfaceBounds, separateResidualCoincidentSegments, simplifyRoutePoints, stackFloorRoutes, verticalTransitionBounds, wallLength, wallLocalToWorld, wallServiceDepthMm, worldToWallLocal } from './geometry';
+import { ceilingRouteHeight, confineRouteToAssociatedWalls, devicePlanObstacle, distance3, findRouteIntersections, floorRouteHeight, gradeRoutePlanePath, isAutomaticRoutePoint, mountingRotation, preferredDirectPlaneRoute, reattachRouteEndpointsToDevice, resolveRouteConflicts, restoreLegacyAutomaticClearancePoints, routeDisplayDiameterMm, routeEndpointShellCrossing, routeLength, routePointsKeepDeviceClearance, routeSegmentAvoidsOpenings, routeSegmentsOnWall, routeSurfaceBounds, routeTurnCount, separateResidualCoincidentSegments, shortestWallRoute, simplifyRoutePoints, stackFloorRoutes, verticalTransitionBounds, wallLength, wallLocalToWorld, wallServiceDepthMm, worldToWallLocal } from './geometry';
 import { createDefaultRackSystem, PREPARED_RACK_DEPTH_MM, PREPARED_RACK_WIDTH_MM, rackHeightMm, synchronizeRackExternalPorts, upgradeLegacyPreparedRack } from './rack';
 import { validRiserRouteLinks } from './riser';
 import { DEFAULT_PROJECT_TITLE } from '../../shared/branding';
@@ -12,6 +12,7 @@ import { dimensionsForDevicePorts } from './devicePorts';
 export const DEFAULT_ROUTE_SEPARATIONS: ProjectSnapshot['preferences']['routeSeparationMm'] = { plumbing: 60, heating: 50, hvac: 80, electrical: 30, data: 30, security: 25, sensors: 25, automation: 25, generic: 30 };
 export const DEFAULT_ROUTE_BEND_RADII: ProjectSnapshot['preferences']['routeBendRadiusMm'] = { plumbing: 150, heating: 150, hvac: 300, electrical: 100, data: 120, security: 80, sensors: 80, automation: 80, storage: 150, transitions: 40, generic: 100, custom: 100 };
 export const DEFAULT_ROUTE_DIAMETERS: ProjectSnapshot['preferences']['routeDiameterMm'] = { plumbing: 25, heating: 20, hvac: 160, electrical: 16, data: 8, security: 6, sensors: 6, automation: 8, storage: 40, transitions: 40, generic: 20, custom: 20 };
+export const DEFAULT_ROUTE_GRAVITY_SLOPES: ProjectSnapshot['preferences']['routeGravitySlopePermille'] = { cable: 0, pipe: 10, duct: 5 };
 
 function migrateLegacyJunctionPort<T extends { name: string; position: { x: number; y: number; z: number }; face: string }>(port: T): T {
   const input = port.name === 'Circuit input' && port.face === 'left' && port.position.x === -60 && port.position.y === 0 && port.position.z === 0;
@@ -58,11 +59,15 @@ export function normalizeConcealedRouteSurfaces(project: ProjectSnapshot, routes
     if (new Set([sourceSurface, destinationSurface]).has('floor') && new Set([sourceSurface, destinationSurface]).has('ceiling')) return route;
     const floorY = floorRouteHeight(project.preferences.floorRouteOffsetMm, route.kind, project.preferences.routeVerticalOrder, project.preferences.routeSeparationMm[route.serviceCategory] ?? 30);
     const ceilingY = ceilingRouteHeight(floor.ceilingHeightMm, project.preferences.ceilingRouteOffsetMm);
+    const bounds = routeSurfaceBounds(project.floors, route.floorId); const diameterMm = routeDisplayDiameterMm(route, project.preferences.routeDiameterMm);
     const associatedWallIds = new Set([...route.wallIds, sourceWall?.id, destinationWall?.id].filter((id): id is string => !!id));
     const associatedWalls = project.walls.filter((wall) => associatedWallIds.has(wall.id));
     const escaped = route.points.slice(1).some((end, index) => {
       const start = route.points[index]; if (isAutomaticRoutePoint(start) || isAutomaticRoutePoint(end) || distance3(start, end) <= 300) return false;
-      if (Math.abs(start.y - floorY) <= 5 && Math.abs(end.y - floorY) <= 5 || Math.abs(start.y - ceilingY) <= 5 && Math.abs(end.y - ceilingY) <= 5) return false;
+      const planLength = Math.hypot(end.x - start.x, end.z - start.z); const shallowGrade = planLength > 1 && Math.abs(start.y - end.y) / planLength <= .1;
+      const floorPlane = start.y >= bounds.floorMinimumY + diameterMm / 2 && start.y <= bounds.floorMaximumY - diameterMm / 2 && end.y >= bounds.floorMinimumY + diameterMm / 2 && end.y <= bounds.floorMaximumY - diameterMm / 2;
+      const ceilingPlane = start.y >= bounds.ceilingMinimumY + diameterMm / 2 && start.y <= bounds.ceilingMaximumY - diameterMm / 2 && end.y >= bounds.ceilingMinimumY + diameterMm / 2 && end.y <= bounds.ceilingMaximumY - diameterMm / 2;
+      if (shallowGrade && (floorPlane || ceilingPlane)) return false;
       return !associatedWalls.some((wall) => routeSegmentsOnWall({ points: [start, end] }, wall).length > 0);
     });
     if (!escaped) return route;
@@ -73,8 +78,9 @@ export function normalizeConcealedRouteSurfaces(project: ProjectSnapshot, routes
     const start = route.points[0]; const end = route.points.at(-1)!; const startAnchor = sourceWall ? wallAnchor(sourceWall, start) : start; const endAnchor = destinationWall ? wallAnchor(destinationWall, end) : end;
     const useCeiling = sourceSurface === 'ceiling' || destinationSurface === 'ceiling' || sourceSurface !== 'floor' && destinationSurface !== 'floor' && Math.abs(startAnchor.y - ceilingY) + Math.abs(endAnchor.y - ceilingY) <= Math.abs(startAnchor.y - floorY) + Math.abs(endAnchor.y - floorY);
     const planeY = useCeiling ? ceilingY : floorY; const startPlane = { ...startAnchor, y: planeY }; const endPlane = { ...endAnchor, y: planeY };
-    const plane = preferredOrthogonalPlaneRoute(startPlane, endPlane, planeY, [], [], project.preferences.routeTurnPenaltyMm);
-    const points = simplifyRoutePoints([start, startAnchor, startPlane, ...plane, endPlane, endAnchor, end]);
+    const plane = preferredDirectPlaneRoute(startPlane, endPlane, planeY, [], project.preferences.routeTurnPenaltyMm);
+    const gradedPlane = gradeRoutePlanePath(plane, route.kind, project.preferences.routeGravitySlopePermille[route.kind] ?? 0, route.flowDirection === 'destination-to-source', useCeiling ? 'ceiling' : 'floor', bounds, diameterMm);
+    const points = simplifyRoutePoints([start, startAnchor, ...gradedPlane, endAnchor, end]);
     return { ...route, wallIds: [...associatedWallIds], points: points.map((point, order) => ({ ...point, id: crypto.randomUUID(), order })) };
   });
 }
@@ -108,14 +114,104 @@ export function rerouteConcealedRouteViaSurface(project: ProjectSnapshot, route:
   const startPlane = { ...startAnchor, y: planeY }; const endPlane = { ...endAnchor, y: planeY };
   const excludedDevices = new Set([source.id, destination.id]);
   const obstacles = project.devices.filter((device) => device.floorId === route.floorId && !excludedDevices.has(device.id)).map((device) => devicePlanObstacle(device, planeY, 100)).filter((item): item is NonNullable<typeof item> => !!item);
-  const plane = preferredOrthogonalPlaneRoute(startPlane, endPlane, planeY, [], obstacles, project.preferences.routeTurnPenaltyMm);
+  const plane = preferredDirectPlaneRoute(startPlane, endPlane, planeY, obstacles, project.preferences.routeTurnPenaltyMm);
   const associatedWallIds = [...new Set([...route.wallIds, sourceWall?.id, destinationWall?.id].filter((id): id is string => !!id))];
-  const candidate = { ...route, wallIds: associatedWallIds, points: simplifyRoutePoints([start, startAnchor, startPlane, ...plane, endPlane, endAnchor, end]).map((point, order) => ({ ...point, id: crypto.randomUUID(), order })) };
+  const bounds = routeSurfaceBounds(project.floors, route.floorId); const diameterMm = routeDisplayDiameterMm(route, project.preferences.routeDiameterMm);
+  const gradedPlane = gradeRoutePlanePath(plane, route.kind, project.preferences.routeGravitySlopePermille[route.kind] ?? 0, route.flowDirection === 'destination-to-source', surface, bounds, diameterMm);
+  const candidate = { ...route, wallIds: associatedWallIds, points: simplifyRoutePoints([start, startAnchor, ...gradedPlane, endAnchor, end]).map((point, order) => ({ ...point, id: crypto.randomUUID(), order })) };
   const associatedWalls = project.walls.filter((wall) => associatedWallIds.includes(wall.id));
-  const confined = confineRouteToAssociatedWalls(candidate, project.walls);
+  const confined = confineRouteToAssociatedWalls(candidate, project.walls, 300, routeEndpointShellCrossing(route, project.devices));
   const clearsOpenings = confined.points.slice(1).every((point, index) => associatedWalls.every((wall) => !routeSegmentsOnWall({ points: [confined.points[index], point] }, wall).length || routeSegmentAvoidsOpenings(wall, confined.points[index], point, project.devices, 100)));
   const clearsDevices = routePointsKeepDeviceClearance(confined.points, project.devices.filter((device) => device.floorId === route.floorId), [source.id, destination.id], 100);
   return clearsOpenings && clearsDevices ? confined : undefined;
+}
+
+/** Rebuilds a connected wall-to-wall route with wall-local square runs. */
+export function rerouteConcealedRouteViaWalls(project: ProjectSnapshot, route: ProjectSnapshot['routes'][number]): ProjectSnapshot['routes'][number] | undefined {
+  if (route.locked || route.installationMethod !== 'concealed' || route.points.length < 2) return undefined;
+  const source = project.devices.find((device) => device.id === route.sourceDeviceId); const destination = project.devices.find((device) => device.id === route.destinationDeviceId);
+  const sourceWall = source?.wallId ? project.walls.find((wall) => wall.id === source.wallId && wall.floorId === route.floorId) : undefined;
+  const destinationWall = destination?.wallId ? project.walls.find((wall) => wall.id === destination.wallId && wall.floorId === route.floorId) : undefined;
+  if (!source || !destination || !sourceWall || !destinationWall) return undefined;
+  const start = route.points[0]; const end = route.points.at(-1)!;
+  const anchor = (wall: NonNullable<typeof sourceWall>, endpoint: typeof start) => {
+    const local = worldToWallLocal(wall, endpoint); const side: -1 | 1 = local.depthMm < 0 ? -1 : 1;
+    return wallLocalToWorld(wall, Math.max(0, Math.min(wallLength(wall), local.distanceAlongMm)), Math.max(0, Math.min(wall.heightMm, endpoint.y)), wallServiceDepthMm(wall, side));
+  };
+  const startAnchor = anchor(sourceWall, start); const endAnchor = anchor(destinationWall, end);
+  const routingHeight = Math.max(0, Math.min(startAnchor.y, endAnchor.y, sourceWall.heightMm, destinationWall.heightMm));
+  const startRun = { ...startAnchor, y: routingHeight }; const endRun = { ...endAnchor, y: routingHeight };
+  const activeWalls = project.walls.filter((wall) => wall.floorId === route.floorId);
+  const path = shortestWallRoute(activeWalls, sourceWall.id, destinationWall.id, startRun, endRun, 200); if (!path) return undefined;
+  let previous = startRun;
+  const concealed = path.map((entry) => {
+    const wall = activeWalls.find((candidate) => candidate.id === entry.wallId); if (!wall) return entry;
+    const local = worldToWallLocal(wall, entry.point); const positive = wallLocalToWorld(wall, local.distanceAlongMm, routingHeight, wallServiceDepthMm(wall, 1)); const negative = wallLocalToWorld(wall, local.distanceAlongMm, routingHeight, wallServiceDepthMm(wall, -1));
+    const point = distance3(previous, positive) <= distance3(previous, negative) ? positive : negative; previous = point; return { ...entry, point };
+  });
+  const wallIds = [...new Set(concealed.map((entry) => entry.wallId))];
+  const associatedWalls = activeWalls.filter((wall) => wallIds.includes(wall.id)); const maximumY = Math.min(...associatedWalls.map((wall) => wall.heightMm));
+  const wallRun = simplifyRoutePoints([startRun, ...concealed.map((entry) => entry.point), endRun]);
+  const gradedWallRun = gradeRoutePlanePath(wallRun, route.kind, project.preferences.routeGravitySlopePermille[route.kind] ?? 0, route.flowDirection === 'destination-to-source', 'floor', { floorMinimumY: 0, floorMaximumY: maximumY, ceilingMinimumY: maximumY, ceilingMaximumY: maximumY }, routeDisplayDiameterMm(route, project.preferences.routeDiameterMm));
+  const points = simplifyRoutePoints([start, startAnchor, ...gradedWallRun, endAnchor, end]);
+  const candidate = confineRouteToAssociatedWalls({ ...route, wallIds, points: points.map((point, order) => ({ ...point, id: crypto.randomUUID(), order })) }, activeWalls, 300, routeEndpointShellCrossing(route, project.devices));
+  const excluded = [source.id, destination.id];
+  const clearsOpenings = candidate.points.slice(1).every((point, index) => associatedWalls.every((wall) => !routeSegmentsOnWall({ points: [candidate.points[index], point] }, wall).length || routeSegmentAvoidsOpenings(wall, candidate.points[index], point, project.devices, 100)));
+  return clearsOpenings && routePointsKeepDeviceClearance(candidate.points, project.devices.filter((device) => device.floorId === route.floorId), excluded, 100) ? candidate : undefined;
+}
+
+/**
+ * Recreates every unlocked concealed path while preserving route identity and
+ * technical metadata. Protected services are installed first; later routes
+ * therefore absorb any required smooth crossing clearance.
+ */
+export function rebuildProjectRouteGeometry(project: ProjectSnapshot): ProjectSnapshot {
+  const originalOrder = new Map(project.routes.map((route, index) => [route.id, index])); const rebuilt = new Map<string, ProjectSnapshot['routes'][number]>();
+  for (const floor of [...project.floors].sort((a, b) => a.sortOrder - b.sortOrder || a.elevationMm - b.elevationMm)) {
+    const installed: ProjectSnapshot['routes'] = [];
+    const routes = project.routes.filter((route) => route.floorId === floor.id).sort((first, second) => {
+      const tierDifference = (project.preferences.routeOverlapPriorities[first.serviceCategory] ?? 4) - (project.preferences.routeOverlapPriorities[second.serviceCategory] ?? 4);
+      return tierDifference || (originalOrder.get(first.id) ?? 0) - (originalOrder.get(second.id) ?? 0);
+    });
+    for (const route of routes) {
+      if (route.locked || route.installationMethod !== 'concealed') { installed.push(route); rebuilt.set(route.id, route); continue; }
+      const candidates = [rerouteConcealedRouteViaWalls(project, route), rerouteConcealedRouteViaSurface(project, route, 'floor'), rerouteConcealedRouteViaSurface(project, route, 'ceiling')].filter((candidate): candidate is NonNullable<typeof candidate> => !!candidate);
+      const selected = candidates.sort((first, second) => {
+        const firstScore = routeLength(first, project.preferences.routeBendRadiusMm[first.serviceCategory] ?? 0, project.walls.filter((wall) => first.wallIds.includes(wall.id))) + routeTurnCount(first) * project.preferences.routeTurnPenaltyMm;
+        const secondScore = routeLength(second, project.preferences.routeBendRadiusMm[second.serviceCategory] ?? 0, project.walls.filter((wall) => second.wallIds.includes(wall.id))) + routeTurnCount(second) * project.preferences.routeTurnPenaltyMm;
+        return firstScore - secondScore;
+      })[0];
+      if (!selected) { installed.push(route); rebuilt.set(route.id, route); continue; }
+      const resolved = project.preferences.avoidRouteOverlaps
+        ? resolveRouteConflicts(selected, installed, project.preferences.routeOverlapPriorities, project.preferences.routeSeparationMm, project.preferences.routeDiameterMm, 14, project.walls, project.preferences.routeBendRadiusMm, routeSurfaceBounds(project.floors, route.floorId), project.preferences.routeTurnPenaltyMm, project.devices.filter((device) => device.floorId === route.floorId)).route
+        : selected;
+      const finalRoute = confineRouteToAssociatedWalls(resolved, project.walls, 300, routeEndpointShellCrossing(resolved, project.devices)); installed.push(finalRoute); rebuilt.set(route.id, finalRoute);
+    }
+  }
+  let routes = project.routes.map((route) => rebuilt.get(route.id) ?? route);
+  // A later route can occasionally expose a conflict that was not present
+  // when an earlier path was installed. Refine the less-protected participant
+  // only when doing so lowers the floor-wide conflict count, preventing an
+  // oscillating sequence of reciprocal detours.
+  for (let pass = 0; pass < 6; pass++) {
+    const conflicts = findRouteIntersections(routes, project.preferences.routeOverlapPriorities, project.preferences.routeSeparationMm, project.preferences.routeDiameterMm); if (!conflicts.length) break;
+    let improved = false;
+    for (const conflict of conflicts) {
+      const first = routes.find((route) => route.id === conflict.routeAId); const second = routes.find((route) => route.id === conflict.routeBId); if (!first || !second) continue;
+      const candidates = [first, second].filter((route) => !route.locked).sort((a, b) => (project.preferences.routeOverlapPriorities[b.serviceCategory] ?? 4) - (project.preferences.routeOverlapPriorities[a.serviceCategory] ?? 4) || (originalOrder.get(b.id) ?? 0) - (originalOrder.get(a.id) ?? 0));
+      for (const mover of candidates) {
+        const others = routes.filter((route) => route.id !== mover.id && route.floorId === mover.floorId);
+        const resolved = resolveRouteConflicts(mover, others, project.preferences.routeOverlapPriorities, project.preferences.routeSeparationMm, project.preferences.routeDiameterMm, 20, project.walls, project.preferences.routeBendRadiusMm, routeSurfaceBounds(project.floors, mover.floorId), project.preferences.routeTurnPenaltyMm, project.devices.filter((device) => device.floorId === mover.floorId)).route;
+        const proposed = routes.map((route) => route.id === mover.id ? confineRouteToAssociatedWalls(resolved, project.walls, 300, routeEndpointShellCrossing(resolved, project.devices)) : route);
+        const proposedConflicts = findRouteIntersections(proposed, project.preferences.routeOverlapPriorities, project.preferences.routeSeparationMm, project.preferences.routeDiameterMm);
+        if (proposedConflicts.length >= conflicts.length) continue;
+        routes = proposed; improved = true; break;
+      }
+      if (improved) break;
+    }
+    if (!improved) break;
+  }
+  return { ...project, routes };
 }
 
 /** Starts a project on elevation zero, falling back to the level nearest zero. */
@@ -143,7 +239,7 @@ function repairLegacyTransitionRoutes(project: ProjectSnapshot): ProjectSnapshot
     if (!otherDevice || !['floor','free'].includes(otherDevice.associationType) || !hasOpenDiagonal && route.name !== 'EL-GF-038') return route;
     const oriented = transitionAtStart ? route.points : [...route.points].reverse(); const transitionPoint = oriented[0]; const devicePoint = oriented[oriented.length - 1];
     const transitionPlane = { x: transitionPoint.x, y: 0, z: transitionPoint.z }; const devicePlane = { x: devicePoint.x, y: 0, z: devicePoint.z };
-    const rebuilt = simplifyRoutePoints([transitionPoint, transitionPlane, ...preferredOrthogonalPlaneRoute(transitionPlane, devicePlane, 0), devicePlane, devicePoint]);
+    const rebuilt = simplifyRoutePoints([transitionPoint, transitionPlane, ...preferredDirectPlaneRoute(transitionPlane, devicePlane, 0), devicePlane, devicePoint]);
     const ordered = transitionAtStart ? rebuilt : rebuilt.reverse();
     return { ...route, wallIds: [], points: ordered.map((point, order) => ({ ...point, id: crypto.randomUUID(), order })) };
   });
@@ -171,7 +267,7 @@ export function createDefaultProject(title = DEFAULT_PROJECT_TITLE): ProjectSnap
       includeRoomName: true, includeWallName: true, includeExportDate: true
     }],
     cameraViews: [], lightingControls: [], photoMarkers: [],
-    preferences: { theme: 'system', gridSizeMm: 100, snapToGrid: true, snapToEndpoints: true, unit: 'm', newWallThicknessMm: 120, newWallStructuralThicknessMm: 120, newWallLiningLeftMm: 0, newWallLiningRightMm: 0, avoidRouteOverlaps: true, preferSharedCorridors: true, routeNamingPattern: '{PREFIX}-{FLOOR}-{SEQ:03}', routeNamingPrefixes: { electrical: 'EL', data: 'DA', security: 'S', hvac: 'HV', heating: 'HT', plumbing: 'PL', sensors: 'SN', automation: 'AU', generic: 'GN', custom: 'CU' }, routeTurnPenaltyMm: 500, ceilingRouteOffsetMm: -50, floorRouteOffsetMm: -150, routeVerticalOrder: ['pipe', 'cable', 'duct'], routeBendRadiusMm: { ...DEFAULT_ROUTE_BEND_RADII }, motionMode: 'animated', routeOverlapPriorities: { plumbing: 1, hvac: 1, heating: 2, electrical: 2, data: 3, security: 3, automation: 4, generic: 4 }, routeSeparationMm: { ...DEFAULT_ROUTE_SEPARATIONS }, routeDiameterMm: { ...DEFAULT_ROUTE_DIAMETERS }, intersectionCheckEnabled: true }
+    preferences: { theme: 'system', gridSizeMm: 100, snapToGrid: true, snapToEndpoints: true, unit: 'm', newWallThicknessMm: 120, newWallStructuralThicknessMm: 120, newWallLiningLeftMm: 0, newWallLiningRightMm: 0, avoidRouteOverlaps: true, preferSharedCorridors: true, routeNamingPattern: '{PREFIX}-{FLOOR}-{SEQ:03}', routeNamingPrefixes: { electrical: 'EL', data: 'DA', security: 'S', hvac: 'HV', heating: 'HT', plumbing: 'PL', sensors: 'SN', automation: 'AU', generic: 'GN', custom: 'CU' }, routeTurnPenaltyMm: 500, ceilingRouteOffsetMm: -50, floorRouteOffsetMm: -150, routeVerticalOrder: ['pipe', 'cable', 'duct'], routeGravitySlopePermille: { ...DEFAULT_ROUTE_GRAVITY_SLOPES }, routeBendRadiusMm: { ...DEFAULT_ROUTE_BEND_RADII }, motionMode: 'animated', routeOverlapPriorities: { plumbing: 1, hvac: 1, heating: 2, electrical: 2, data: 3, security: 3, automation: 4, generic: 4 }, routeSeparationMm: { ...DEFAULT_ROUTE_SEPARATIONS }, routeDiameterMm: { ...DEFAULT_ROUTE_DIAMETERS }, intersectionCheckEnabled: true }
   };
   return upgraded;
 }
@@ -184,19 +280,19 @@ export function upgradeProject(project: ProjectSnapshot): ProjectSnapshot {
     .filter((item) => !legacyCategoryIds.has(item.id) && !legacyCategoryIds.has(item.serviceCategory))
     .map((item) => { const serviceCategory = consolidatedServiceCategory(item.serviceCategory); return { ...item, serviceCategory, color: item.color.toLowerCase() === legacyColors[serviceCategory]?.toLowerCase() ? PROJECT_SERVICE_COLORS[serviceCategory] ?? item.color : item.color }; });
   const categoryIds = new Set(categories.map((item) => item.id));
-  const legacyTypeIds: Record<string, string> = { 'wifi-access-point': 'access-point', 'hvac-unit': 'indoor-unit', 'square-column': 'column', 'round-column': 'column', furniture: 'furniture-custom', 'floor-riser': 'floor-transition', 'custom-electrical': 'appliance-connection' };
+  const legacyTypeIds: Record<string, string> = { 'wifi-access-point': 'access-point', 'hvac-unit': 'indoor-unit', 'square-column': 'column', 'round-column': 'column', furniture: 'furniture-custom', 'floor-riser': 'floor-transition', 'custom-electrical': 'appliance-connection', 'video-intercom': 'intercom' };
   const defaultTypeById = new Map(DEFAULT_DEVICE_TYPES.map((item) => [item.id, item]));
   const builtInTypeRevisionUpgrades = new Set((project.deviceTypes ?? []).map((source) => ({ source, id: legacyTypeIds[source.id] ?? source.id })).filter(({ source, id }) => { const defaults = defaultTypeById.get(id); return !source.custom && (source.builtInRevision ?? 0) < (defaults?.builtInRevision ?? 0); }).map(({ id }) => id));
   const upgradedTypeMap = new Map<string, ProjectSnapshot['deviceTypes'][number]>();
   (project.deviceTypes ?? []).forEach((source) => {
-    if (source.id === 'custom-electrical') return;
+    if (source.id === 'custom-electrical' || source.id === 'video-intercom') return;
     const item = { ...source, id: legacyTypeIds[source.id] ?? source.id };
     const serviceCategory = consolidatedServiceCategory(item.serviceCategory);
     const defaults = defaultTypeById.get(item.id);
     const requiresBuiltInRevision = builtInTypeRevisionUpgrades.has(item.id); const association = requiresBuiltInRevision && item.id === 'rack' ? defaults?.defaultAssociation ?? 'floor' : item.defaultAssociation ?? defaults?.defaultAssociation ?? 'wall'; const legacyMountingFace = !item.custom && item.defaultBackFace === 'back' && (association === 'floor' || association === 'ceiling') && item.id !== 'access-point'; const legacyRackSize = item.id === 'rack' && item.defaultDimensions.width === 600 && item.defaultDimensions.depth === 800; const solarDimensions = item.id === 'solar-panel' && item.defaultDimensions.height <= 60 ? defaults?.defaultDimensions : item.id === 'access-point' && !item.custom || legacyRackSize ? defaults?.defaultDimensions : item.defaultDimensions;
-    const configuredDefaultPorts = (requiresBuiltInRevision && ['indoor-unit','outdoor-unit','heat-pump'].includes(item.id) ? defaults?.defaultPorts : !item.custom && usesLegacyMechanicalPorts(item.id, item.defaultPorts ?? []) ? defaults?.defaultPorts : !item.custom && !(item.defaultPorts ?? []).length ? defaults?.defaultPorts : item.defaultPorts) ?? defaults?.defaultPorts ?? [];
+    const configuredDefaultPorts = (requiresBuiltInRevision && ['indoor-unit','outdoor-unit','heat-pump','solar-panel'].includes(item.id) ? defaults?.defaultPorts : !item.custom && usesLegacyMechanicalPorts(item.id, item.defaultPorts ?? []) ? defaults?.defaultPorts : !item.custom && !(item.defaultPorts ?? []).length ? defaults?.defaultPorts : item.defaultPorts) ?? defaults?.defaultPorts ?? [];
     upgradedTypeMap.set(item.id, {
-      ...defaults, ...item, builtInRevision: defaults?.builtInRevision ?? item.builtInRevision, name: item.id === 'switch' && !item.custom ? defaults?.name ?? item.name : item.name, serviceCategory, categoryId: categoryIdForService(serviceCategory),
+      ...defaults, ...item, builtInRevision: defaults?.builtInRevision ?? item.builtInRevision, name: ['switch','security-camera'].includes(item.id) && !item.custom ? defaults?.name ?? item.name : item.name, serviceCategory, categoryId: categoryIdForService(serviceCategory),
       defaultDisplayColor: item.defaultDisplayColor ?? defaultDeviceDisplayColor(item.id, serviceCategory),
       family: defaults?.family ?? item.family ?? 'device', shape: item.id === 'access-point' && !item.custom ? defaults?.shape ?? item.shape : item.shape, defaultBackFace: requiresBuiltInRevision && item.id === 'rack' ? defaults?.defaultBackFace ?? 'bottom' : item.id === 'access-point' && !item.custom ? 'back' : legacyMountingFace ? defaults?.defaultBackFace ?? item.defaultBackFace : item.defaultBackFace ?? defaults?.defaultBackFace ?? 'back',
       defaultAssociation: association, defaultDimensions: solarDimensions ?? defaults?.defaultDimensions ?? item.defaultDimensions,
@@ -204,7 +300,8 @@ export function upgradeProject(project: ProjectSnapshot): ProjectSnapshot {
         const normalized = { ...port, position: item.id === 'solar-panel' && port.name === 'DC output' && port.position?.y === -15 ? { ...port.position, y: 400 } : port.position ?? { x: 0, y: 0, z: 0 }, face: port.face ?? 'back', required: port.required ?? false, spaceRequiredMm: port.spaceRequiredMm ?? defaults?.defaultPortSpaceMm ?? 30 };
         return item.id === 'junction-box' ? migrateLegacyJunctionPort(normalized) : normalized;
       }),
-      unlimitedPorts: item.unlimitedPorts ?? defaults?.unlimitedPorts ?? false, defaultPortSpaceMm: item.defaultPortSpaceMm ?? defaults?.defaultPortSpaceMm
+      unlimitedPorts: !item.custom && ['junction-box', 'electrical-panel'].includes(item.id) ? true : item.unlimitedPorts ?? defaults?.unlimitedPorts ?? false,
+      defaultPortSpaceMm: item.defaultPortSpaceMm ?? defaults?.defaultPortSpaceMm
     } as ProjectSnapshot['deviceTypes'][number]);
   });
   const deviceTypes = [...upgradedTypeMap.values()];
@@ -233,7 +330,7 @@ export function upgradeProject(project: ProjectSnapshot): ProjectSnapshot {
       const typeId = legacyTypeIds[device.typeId] ?? device.typeId;
       const defaults = defaultTypeById.get(typeId);
       const existingPorts = device.ports ?? [];
-      const refreshMechanicalPorts = !!defaults && builtInTypeRevisionUpgrades.has(typeId) && ['indoor-unit','outdoor-unit','heat-pump'].includes(typeId); const portSources: DevicePort[] = refreshMechanicalPorts ? revisedMechanicalDevicePorts(device.id, typeId, existingPorts, defaults.defaultPorts) : existingPorts.length ? existingPorts : (defaults?.defaultPorts ?? []).map((port) => ({ ...structuredClone(port), id: crypto.randomUUID(), deviceId: device.id }));
+      const refreshBuiltInPorts = !!defaults && builtInTypeRevisionUpgrades.has(typeId) && ['indoor-unit','outdoor-unit','heat-pump','solar-panel'].includes(typeId); const portSources: DevicePort[] = refreshBuiltInPorts ? revisedMechanicalDevicePorts(device.id, typeId, existingPorts, defaults.defaultPorts) : existingPorts.length ? existingPorts : (defaults?.defaultPorts ?? []).map((port) => ({ ...structuredClone(port), id: crypto.randomUUID(), deviceId: device.id }));
       let ports: DevicePort[] = portSources.map((port) => {
         const normalized = { ...port, deviceId: device.id, serviceCategory: consolidatedServiceCategory(port.serviceCategory), position: port.position ?? { x: 0, y: 0, z: 0 }, face: port.face ?? 'back', required: port.required ?? false, spaceRequiredMm: port.spaceRequiredMm ?? defaults?.defaultPortSpaceMm ?? 30 } as DevicePort;
         return typeId === 'junction-box' ? migrateLegacyJunctionPort(normalized) : normalized;
@@ -278,7 +375,7 @@ export function upgradeProject(project: ProjectSnapshot): ProjectSnapshot {
       const upgradedDevice = {
         ...device,
         ...transitionPatch,
-        name: typeId === 'switch' && /^Switch(?:\s+\d+)?$/i.test(device.name) ? device.name.replace(/^Switch/i, 'Light switch') : device.name,
+        name: typeId === 'switch' && /^Switch(?:\s+\d+)?$/i.test(device.name) ? device.name.replace(/^Switch/i, 'Light switch') : device.typeId === 'video-intercom' && /^Video intercom(?:\s+\d+)?$/i.test(device.name) ? device.name.replace(/^Video intercom/i, 'Intercom') : device.typeId === 'security-camera' && /^Security camera(?:\s+\d+)?$/i.test(device.name) ? device.name.replace(/^Security camera/i, 'Outdoor camera') : device.name,
         typeId,
         floorId: associatedWall?.floorId ?? device.floorId,
         installationStatus: device.installationStatus === 'decommissioned' ? 'planned' : device.installationStatus,
@@ -320,6 +417,7 @@ export function upgradeProject(project: ProjectSnapshot): ProjectSnapshot {
       ceilingRouteOffsetMm: project.preferences?.ceilingRouteOffsetMm == null ? -50 : project.preferences.ceilingRouteOffsetMm > 0 ? -project.preferences.ceilingRouteOffsetMm : project.preferences.ceilingRouteOffsetMm,
       floorRouteOffsetMm: project.preferences?.floorRouteOffsetMm == null ? -150 : project.preferences.floorRouteOffsetMm > 0 ? -project.preferences.floorRouteOffsetMm : project.preferences.floorRouteOffsetMm,
       routeVerticalOrder: project.preferences?.routeVerticalOrder?.length === 3 && new Set(project.preferences.routeVerticalOrder).size === 3 ? project.preferences.routeVerticalOrder : ['pipe', 'cable', 'duct'],
+      routeGravitySlopePermille: { ...DEFAULT_ROUTE_GRAVITY_SLOPES, ...(project.preferences?.routeGravitySlopePermille ?? {}) },
       routeBendRadiusMm: { ...DEFAULT_ROUTE_BEND_RADII, ...(project.preferences?.routeBendRadiusMm ?? {}) },
       motionMode: project.preferences?.motionMode === 'off' ? 'off' : 'animated',
       routeOverlapPriorities: project.preferences?.routeOverlapPriorities ?? { plumbing: 1, hvac: 1, heating: 2, electrical: 2, data: 3, security: 3, automation: 4, generic: 4 },
@@ -329,21 +427,31 @@ export function upgradeProject(project: ProjectSnapshot): ProjectSnapshot {
     }
   };
   const aligned = { ...upgraded, floors: alignFloorBlueprints(upgraded.floors) };
-  const repaired = repairLegacyTransitionRoutes(aligned);
+  const centeredJunctionRoutes = aligned.routes.map((route) => aligned.devices.filter((device) => device.typeId === 'junction-box' && (route.sourceDeviceId === device.id || route.destinationDeviceId === device.id)).reduce((current, device) => {
+    const deviceElevation = aligned.floors.find((floor) => floor.id === device.floorId)?.elevationMm ?? 0; const routeElevation = aligned.floors.find((floor) => floor.id === current.floorId)?.elevationMm ?? 0;
+    return reattachRouteEndpointsToDevice(current, device, deviceElevation, routeElevation);
+  }, route));
+  const repaired = repairLegacyTransitionRoutes({ ...aligned, routes: centeredJunctionRoutes });
   const surfaceRepairedRoutes = normalizeConcealedRouteSurfaces(repaired);
   const stackedRoutes = repaired.floors.reduce((items, floor) => stackFloorRoutes(items, floor.id, repaired.preferences.floorRouteOffsetMm, repaired.preferences.routeVerticalOrder, repaired.preferences.routeSeparationMm), surfaceRepairedRoutes);
   const routes = stackedRoutes.reduce<ProjectSnapshot['routes']>((items, route) => {
     const existing = items.filter((item) => item.floorId === route.floorId);
     const clearance = repaired.preferences.routeSeparationMm[route.serviceCategory] ?? 30;
-    const separated = { ...route, points: separateResidualCoincidentSegments(route.points, existing, clearance).map((point, order) => ({ ...point, id: 'id' in point && typeof point.id === 'string' ? point.id : crypto.randomUUID(), order })) };
+    const conflicts = findRouteIntersections([...existing, route], repaired.preferences.routeOverlapPriorities, repaired.preferences.routeSeparationMm, repaired.preferences.routeDiameterMm).some((conflict) => conflict.routeAId === route.id || conflict.routeBId === route.id);
+    const separatedPoints = conflicts ? separateResidualCoincidentSegments(route.points, existing, clearance) : route.points;
+    const separated = separatedPoints === route.points ? route : { ...route, points: separatedPoints.map((point, order) => ({ ...point, id: 'id' in point && typeof point.id === 'string' ? point.id : crypto.randomUUID(), order })) };
     // Reapply the same route-creation invariant in persistence order: an older
     // installed run remains stable and each later run must clear what already
     // exists, independent of route kind or service category.
     const resolved = resolveRouteConflicts(separated, repaired.preferences.avoidRouteOverlaps ? existing : [], repaired.preferences.routeOverlapPriorities, repaired.preferences.routeSeparationMm, repaired.preferences.routeDiameterMm, 10, repaired.walls, repaired.preferences.routeBendRadiusMm, routeSurfaceBounds(repaired.floors, route.floorId), repaired.preferences.routeTurnPenaltyMm, repaired.devices.filter((device) => device.floorId === route.floorId)).route;
-    const confined = confineRouteToAssociatedWalls(resolved, repaired.walls); const normalized = normalizeConcealedRouteSurfaces({ ...repaired, routes: [confined] }, [confined])[0] ?? confined;
+    const confined = confineRouteToAssociatedWalls(resolved, repaired.walls, 300, routeEndpointShellCrossing(resolved, repaired.devices)); const normalized = normalizeConcealedRouteSurfaces({ ...repaired, routes: [confined] }, [confined])[0] ?? confined;
     items.push(normalized); return items;
   }, []);
-  return { ...repaired, routes, devices: repaired.devices.map((device) => device.typeId === 'floor-transition' ? { ...device, riserRouteLinks: validRiserRouteLinks(routes, device.id, device.riserRouteLinks) } : device) };
+  return { ...repaired, routes, devices: repaired.devices.map((device) => {
+    if (device.typeId === 'floor-transition') return { ...device, riserRouteLinks: validRiserRouteLinks(routes, device.id, device.riserRouteLinks) };
+    const type = repaired.deviceTypes.find((item) => item.id === device.typeId);
+    return type?.unlimitedPorts ? { ...device, dimensions: dimensionsForDevicePorts(device, type, device.ports, routes, repaired.preferences.routeDiameterMm) } : device;
+  }) };
 }
 
 /** Removes devices, their connected routes, and references that would otherwise become stale. */

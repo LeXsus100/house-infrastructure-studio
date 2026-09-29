@@ -3,7 +3,7 @@ import { Camera, Trash2, Upload, X } from 'lucide-react';
 import type { PhotoCategory, PhotoMarker, ProjectPhoto } from '../../shared/types';
 import { api } from '../api';
 import { useI18n } from '../lib/i18n';
-import { PHOTO_CATEGORIES } from './PhotoSidebar';
+import { PHOTO_CATEGORIES } from '../lib/photos';
 
 const readDataUrl = (file: File) => new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(reader.error ?? new Error('Could not read image.')); reader.readAsDataURL(file); });
 

@@ -25,8 +25,16 @@ nav = [
     { "Controls" = "user-guide/controls.md" },
     { "Backups and exports" = "user-guide/backups-and-exports.md" },
   ] },
+  { "Features" = [
+    { "Feature guide" = "features/index.md" },
+    { "Editor and view modes" = "features/editor-and-views.md" },
+    { "X-ray and routes" = "features/xray-and-routes.md" },
+    { "Overview" = "features/overview.md" },
+    { "Light" = "features/light.md" },
+    { "Settings" = "features/settings.md" },
+    { "Exports and field output" = "features/exports.md" },
+  ] },
   { "Reference" = [
-    { "Capabilities" = "reference/capabilities.md" },
     { "Visual identification" = "reference/visual-identification.md" },
     { "Data and privacy" = "reference/privacy.md" },
     { "License" = "reference/license.md" },
@@ -40,7 +48,7 @@ nav = [
     { "Security policy" = "development/security.md" },
   ] },
   { "Releases" = [
-    { "Changelog" = "releases/changelog.md" },
+    { "Release history" = "releases/changelog.md" },
   ] },
 ]
 

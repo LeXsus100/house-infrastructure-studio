@@ -5,7 +5,7 @@ SQLite foreign keys are enabled, writes use prepared statements, and project rep
 | Table | Purpose and key relationships |
 | --- | --- |
 | `schema_migrations` | Applied migration versions. |
-| `projects` | Project identity, timestamps, theme, drafting preferences, ceiling/floor route offsets, floor service-stack order and spacing, overlap avoidance, turn cost, route motion, per-service tiers, minimum route separations, bend radii, and default installed route diameters. |
+| `projects` | Project identity, timestamps, theme, drafting preferences, ceiling/floor route offsets, floor service-stack order and spacing, pipe/duct gravity grades, overlap avoidance, turn cost, route motion, per-service tiers, minimum route separations, bend radii, and default installed route diameters. |
 | `floors` | Belongs to a project; stores explicit order, elevation, ceiling height in integer millimetres, and a bounded local image-blueprint value object including persisted scale-line endpoints/length and an optional source-pixel registration point. |
 | `walls` | Belongs to a project and floor; stores exact start/end coordinates, height, derived finished thickness, structural-core thickness, independent left/right drywall-lining thicknesses, lock, and visibility. |
 | `rooms` | Belongs to a project and floor; stores explicit polygon boundary, calculated area, ceiling height, optional room-category relationship, and lock state. |

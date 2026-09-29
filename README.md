@@ -88,6 +88,14 @@ npm run db:reset
 
 Each project also receives its own local workspace at `.data/projects/<project-uuid>/`, containing a validated `project.json` mirror plus dedicated `assets/` and `exports/` folders. **Projects → Create another project** asks for a separate project name, preserves the current project, and creates a new UUID workspace.
 
+Audit the most recently saved project's routes without changing data:
+
+```powershell
+npm run routes:rebuild
+```
+
+Add `-- --apply --project <project-uuid>` to save the validated regenerated paths. The command preserves route identities and metadata, validates the complete snapshot, writes the matching project-workspace mirror, and creates a timestamped SQLite backup under `.data/backups/` before the transaction.
+
 `db:reset` permanently removes the local SQLite database, its WAL files, and all `.data/projects/` workspaces. Export a JSON project backup from the toolbar first if the data matters. To use another local location, set `HOUSE_INFRASTRUCTURE_DB_PATH` before starting the server. The older `CASA_DB_PATH` variable remains accepted only for backward compatibility.
 
 ## Contributing

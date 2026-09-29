@@ -15,6 +15,7 @@ describe('project serialization and history', () => {
     expect(restored.preferences.ceilingRouteOffsetMm).toBe(-50);
     expect(restored.preferences.floorRouteOffsetMm).toBe(-150);
     expect(restored.preferences.routeVerticalOrder).toEqual(['pipe', 'cable', 'duct']);
+    expect(restored.preferences.routeGravitySlopePermille).toMatchObject({ pipe: 10, duct: 5 });
     expect(restored.preferences.motionMode).toBe('animated');
     expect(restored.preferences.preferSharedCorridors).toBe(true);
     expect(restored.preferences.routeDiameterMm).toMatchObject({ electrical: 16, data: 8, hvac: 160, plumbing: 25 });
@@ -51,6 +52,19 @@ describe('project serialization and history', () => {
     const upgraded = upgradeProject(project);
     expect(upgraded.deviceTypes.some((type) => type.id === 'custom-electrical')).toBe(false);
     expect(upgraded.devices.find((device) => device.id === 'legacy-electrical')?.typeId).toBe('appliance-connection');
+  });
+
+  it('retires video intercoms and exposes the revised security catalogue', () => {
+    const project = createDefaultProject(); const intercom = project.deviceTypes.find((type) => type.id === 'intercom')!;
+    project.deviceTypes.push({ ...structuredClone(intercom), id: 'video-intercom', name: 'Video intercom' });
+    project.devices.push({ id: 'legacy-video-intercom', typeId: 'video-intercom', name: 'Video intercom 1', categoryId: 'security', serviceCategory: 'security', manufacturer: '', model: '', description: '', floorId: project.floors[0].id, associationType: 'wall', position: { x: 0, y: 1200, z: 0 }, heightFromFloorMm: 1200, rotationDeg: { x: 0, y: 0, z: 0 }, dimensions: { width: 160, height: 240, depth: 40 }, mounting: 'surface', backFace: 'back', powerRequirements: '', networkRequirements: '', notes: '', installationStatus: 'planned', ports: [], customProperties: [], showLabel: false, locked: false, hidden: false });
+    const upgraded = upgradeProject(project);
+    expect(upgraded.deviceTypes.some((type) => type.id === 'video-intercom')).toBe(false);
+    expect(upgraded.devices.find((device) => device.id === 'legacy-video-intercom')).toMatchObject({ typeId: 'intercom', name: 'Intercom 1' });
+    expect(upgraded.deviceTypes.find((type) => type.id === 'security-camera')?.name).toBe('Outdoor camera');
+    expect(upgraded.deviceTypes.find((type) => type.id === 'indoor-camera')).toMatchObject({ defaultAssociation: 'floor', defaultBackFace: 'bottom' });
+    expect(upgraded.deviceTypes.find((type) => type.id === 'doorbell')?.defaultPorts[0]).toMatchObject({ connectorType: 'RJ45', serviceCategory: 'data' });
+    expect(upgraded.deviceTypes.find((type) => type.id === 'doorbell-speaker')?.defaultPorts[0]).toMatchObject({ connectorType: 'RJ45', serviceCategory: 'data' });
   });
 
   it('opens projects on the floor nearest elevation zero', () => {
@@ -98,6 +112,7 @@ describe('project serialization and history', () => {
   it('moves only legacy junction-box terminations inside the enclosure', () => {
     const project = createDefaultProject();
     const junctionType = project.deviceTypes.find((item) => item.id === 'junction-box')!;
+    junctionType.unlimitedPorts = false;
     junctionType.defaultPorts = junctionType.defaultPorts.map((port, index) => ({ ...port, face: index ? 'right' : 'left', position: { x: index ? 60 : -60, y: 0, z: 0 } }));
     const customPort = { ...junctionType.defaultPorts[0], name: 'Custom terminal', face: 'front' as const, position: { x: 10, y: 12, z: 35 } };
     junctionType.defaultPorts.push(customPort);
@@ -107,6 +122,7 @@ describe('project serialization and history', () => {
       { face: 'back', position: { x: 25, y: 0, z: -25 } }
     ]);
     expect(upgraded.defaultPorts[2]).toMatchObject(customPort);
+    expect(upgraded.unlimitedPorts).toBe(true);
   });
 
   it('generates configurable floor-aware route identifiers', () => {
@@ -138,7 +154,7 @@ describe('project serialization and history', () => {
     expect(Number(staircase.customProperties.find((item) => item.key === 'Step count')?.value)).toBeGreaterThanOrEqual(18);
   });
 
-  it('repairs legacy riser routes that projected diagonally through open room volume', () => {
+  it('repairs legacy riser routes through the shortest concealed floor span', () => {
     const project = createDefaultProject(); const floor = project.floors[0];
     project.walls.push(
       { id: 'source-wall', floorId: floor.id, name: 'Source', start: { x: 0, z: 0 }, end: { x: 2000, z: 0 }, heightMm: 2700, thicknessMm: 120, structuralThicknessMm: 120, liningLeftMm: 0, liningRightMm: 0, locked: false, hidden: false },
@@ -151,7 +167,7 @@ describe('project serialization and history', () => {
     project.routes.push({ id: 'legacy-route', kind: 'cable', name: 'EL-GF-038', serviceCategory: 'electrical', floorId: floor.id, sourceDeviceId: 'transition', destinationDeviceId: 'rack', wallIds: [], points: [{ id: 'p1', order: 0, x: 0, y: 2750, z: 0 }, { id: 'p2', order: 1, x: 1900, y: 2750, z: 1900 }, { id: 'p3', order: 2, x: 1900, y: 600, z: 1900 }] } as unknown as ProjectSnapshot['routes'][number]);
     const repaired = upgradeProject(project).routes[0];
     expect(repaired.wallIds).toEqual([]);
-    expect(repaired.points.slice(1).every((point, index) => Math.abs(point.x - repaired.points[index].x) <= 2 || Math.abs(point.z - repaired.points[index].z) <= 2)).toBe(true);
+    expect(repaired.points.slice(1).some((point, index) => Math.abs(point.x - repaired.points[index].x) > 2 && Math.abs(point.z - repaired.points[index].z) > 2 && point.y === -150 && repaired.points[index].y === -150)).toBe(true);
     expect(repaired.points).toEqual(expect.arrayContaining([expect.objectContaining({ x: 0, y: -150, z: 0 }), expect.objectContaining({ x: 1900, y: -150, z: 1900 })]));
     expect(repaired.points[0]).toMatchObject({ x: 0, y: 2750, z: 0 }); expect(repaired.points.at(-1)).toMatchObject({ x: 1900, y: 600, z: 1900 });
   });

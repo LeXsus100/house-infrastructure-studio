@@ -64,7 +64,14 @@ export function constrainRoutePointToWallLining(wall: Wall, point: Vec3, edgeIns
  * Floor and ceiling segments sit outside the wall height and remain untouched,
  * so their plan paths may still run diagonally.
  */
-export function confineRouteToAssociatedWalls(route: Route, walls: Wall[], proximityMm = 300): Route {
+export interface RouteEndpointShellCrossing { start?: boolean; end?: boolean }
+
+export function routeEndpointShellCrossing(route: Pick<Route, 'sourceDeviceId' | 'destinationDeviceId'>, devices: Device[]): RouteEndpointShellCrossing {
+  const typeAt = (id?: string) => devices.find((device) => device.id === id)?.typeId;
+  return { start: typeAt(route.sourceDeviceId) === 'junction-box', end: typeAt(route.destinationDeviceId) === 'junction-box' };
+}
+
+export function confineRouteToAssociatedWalls(route: Route, walls: Wall[], proximityMm = 300, shellCrossing: RouteEndpointShellCrossing = {}): Route {
   if (!route.wallIds.length || route.points.length < 2) return route;
   const associated = walls.filter((wall) => route.wallIds.includes(wall.id));
   if (!associated.length) return route;
@@ -82,7 +89,7 @@ export function confineRouteToAssociatedWalls(route: Route, walls: Wall[], proxi
     const confined = wallLocalToWorld(candidate.wall, candidate.local.distanceAlongMm, candidate.local.heightMm, depth);
     return { ...point, ...constrainRoutePointToWallLining(candidate.wall, confined) };
   });
-  const orthogonal = orthogonalizeWallRoutePoints(points, associated);
+  const orthogonal = orthogonalizeWallRoutePoints(points, associated, route.kind === 'pipe' || route.kind === 'duct', shellCrossing);
   const geometryChanged = changed || orthogonal.length !== route.points.length || orthogonal.some((point, index) => {
     const previous = route.points[index]; return !previous || distance3(point, previous) > 1;
   });
@@ -534,6 +541,18 @@ export function devicePortWorldPosition(device: Device, port: DevicePort): Vec3 
   };
 }
 
+/**
+ * Physical route termination used by the editor and persistence repair.
+ * A junction box is an enclosure, not a surface-mounted socket: every circuit
+ * terminates at its geometric centre and may pass through the enclosure shell.
+ * The selected port still records the circuit correspondence and direction.
+ */
+export function deviceRouteEndpointWorldPosition(device: Device, port: DevicePort): Vec3 {
+  return device.typeId === 'junction-box'
+    ? { x: roundMm(device.position.x), y: roundMm(device.position.y), z: roundMm(device.position.z) }
+    : devicePortWorldPosition(device, port);
+}
+
 function rotateDeviceLocalVector(device: Device, vector: Vec3): Vec3 {
   const xAngle = device.rotationDeg.x * Math.PI / 180; const yAngle = device.rotationDeg.y * Math.PI / 180; const zAngle = device.rotationDeg.z * Math.PI / 180;
   const cx = Math.cos(xAngle); const sx = Math.sin(xAngle); const cy = Math.cos(yAngle); const sy = Math.sin(yAngle); const cz = Math.cos(zAngle); const sz = Math.sin(zAngle);
@@ -579,7 +598,8 @@ export function routeSegmentCrossesDeviceBody(start: Vec3, end: Vec3, device: De
  */
 export function deviceSafeTerminalLead(device: Device, port: DevicePort, concealedPoint: Vec3, clearanceMm = 10): Vec3[] {
   const portWorld = devicePortWorldPosition(device, port);
-  if (['junction-box', 'electrical-panel'].includes(device.typeId) || !routeSegmentCrossesDeviceBody(concealedPoint, portWorld, device)) return [concealedPoint, portWorld];
+  const endpointWorld = deviceRouteEndpointWorldPosition(device, port);
+  if (['junction-box', 'electrical-panel'].includes(device.typeId) || !routeSegmentCrossesDeviceBody(concealedPoint, portWorld, device)) return [concealedPoint, endpointWorld];
   const half = { x: device.dimensions.width / 2, y: device.dimensions.height / 2, z: device.dimensions.depth / 2 };
   const margin = Math.max(2, clearanceMm); const shell = { x: half.x + margin, y: half.y + margin, z: half.z + margin };
   const faceNormals: Record<MountingFace, Vec3> = { front: { x: 0, y: 0, z: 1 }, back: { x: 0, y: 0, z: -1 }, left: { x: -1, y: 0, z: 0 }, right: { x: 1, y: 0, z: 0 }, top: { x: 0, y: 1, z: 0 }, bottom: { x: 0, y: -1, z: 0 } };
@@ -607,13 +627,13 @@ export function deviceSafeTerminalLead(device: Device, port: DevicePort, conceal
   return path;
 }
 
-/** Keeps connected route endpoints on their exact device ports after the device moves or rotates. */
+/** Keeps connected routes on their physical termination point after the device moves or rotates. */
 export function reattachRouteEndpointsToDevice(route: Route, device: Device, deviceFloorElevationMm = 0, routeFloorElevationMm = 0): Route {
   if (route.sourceDeviceId !== device.id && route.destinationDeviceId !== device.id || !route.points.length) return route;
   const points = route.points.map((point) => ({ ...point })); const elevationDelta = deviceFloorElevationMm - routeFloorElevationMm;
   const attach = (index: number, portId?: string) => {
     const port = device.ports.find((candidate) => candidate.id === portId); if (!port) return;
-    const position = devicePortWorldPosition(device, port); points[index] = { ...points[index], ...position, y: position.y + elevationDelta };
+    const position = deviceRouteEndpointWorldPosition(device, port); points[index] = { ...points[index], ...position, y: position.y + elevationDelta };
   };
   if (route.sourceDeviceId === device.id) attach(0, route.sourcePortId);
   if (route.destinationDeviceId === device.id) attach(points.length - 1, route.destinationPortId);
@@ -845,7 +865,33 @@ export function optimizeRouteControlPoints(
     });
     return { ...current, points };
   };
-  let optimized = route; let start = 0;
+  let optimized = route;
+  // Lateral lane separation can leave a very short connector between two
+  // otherwise long ceiling/floor runs. Two fillets cannot physically fit on
+  // that connector, so remove the redundant member of the pair when doing so
+  // keeps route clearance and improves the complete route score. Automatic
+  // crossing-hill samples are never removed or exposed as authored controls.
+  let compacted = true;
+  while (compacted && optimized.points.length > 3) {
+    compacted = false;
+    for (let index = 1; index < optimized.points.length - 2; index++) {
+      const firstCorner = optimized.points[index]; const secondCorner = optimized.points[index + 1];
+      if (isAutomaticRoutePoint(firstCorner) || isAutomaticRoutePoint(secondCorner)) continue;
+      const connectorLength = distance3(firstCorner, secondCorner); const blendSpan = Math.max(40, bendRadiusMm * 2);
+      if (connectorLength >= blendSpan) continue;
+      const previous = optimized.points[index - 1]; const next = optimized.points[index + 2];
+      const samePlane = (a: Vec3, b: Vec3, c: Vec3) => Math.abs(a.y - b.y) <= 2 && Math.abs(b.y - c.y) <= 2 && routePointOnHorizontalServicePlane(b, bounds);
+      const candidates: Route[] = [];
+      if (samePlane(previous, firstCorner, secondCorner)) candidates.push(routeWithReplacement(optimized, index, index, []));
+      if (samePlane(firstCorner, secondCorner, next)) candidates.push(routeWithReplacement(optimized, index + 1, index + 1, []));
+      const shellCrossing = routeEndpointShellCrossing(optimized, devices);
+      if (shellCrossing.start && index === 1) candidates.push(routeWithReplacement(optimized, index, index, []));
+      if (shellCrossing.end && index + 2 === optimized.points.length - 1) candidates.push(routeWithReplacement(optimized, index + 1, index + 1, []));
+      const selected = candidates.reduce((current, candidate) => routePointsKeepDeviceClearance(candidate.points, devices, endpointDeviceIds, 100) && isBetter(candidate, current) ? candidate : current, optimized);
+      if (selected !== optimized) { optimized = selected; compacted = true; break; }
+    }
+  }
+  let start = 0;
   while (start < optimized.points.length - 2) {
     const first = optimized.points[start];
     if (isAutomaticRoutePoint(first) || !routePointOnHorizontalServicePlane(first, bounds)) { start++; continue; }
@@ -891,11 +937,12 @@ function wallContainsRoutePoint(wall: Wall, point: Vec3, toleranceMm = 12) {
 }
 
 /** Replaces any diagonal segment lying inside one wall with horizontal/vertical wall-local runs. */
-export function orthogonalizeWallRoutePoints(points: Vec3[], walls: Wall[]): Vec3[] {
+export function orthogonalizeWallRoutePoints(points: Vec3[], walls: Wall[], preserveShallowGravityGrade = false, shellCrossing: RouteEndpointShellCrossing = {}): Vec3[] {
   if (points.length < 2 || !walls.length) return points.map((point) => ({ ...point }));
   const result: Vec3[] = [{ ...points[0] }];
-  points.slice(1).forEach((end) => {
+  points.slice(1).forEach((end, segmentIndex) => {
     const start = result[result.length - 1];
+    if ((segmentIndex === 0 && shellCrossing.start) || (segmentIndex === points.length - 2 && shellCrossing.end)) { result.push({ ...end }); return; }
     // Crossing clearances are sampled curves, not authored wall turns. Keep
     // their short sloped segments intact instead of squaring every sample.
     if (isAutomaticRoutePoint(start) || isAutomaticRoutePoint(end)) { result.push({ ...end }); return; }
@@ -903,6 +950,8 @@ export function orthogonalizeWallRoutePoints(points: Vec3[], walls: Wall[]): Vec
     if (wall) {
       const localStart = worldToWallLocal(wall, start); const localEnd = worldToWallLocal(wall, end);
       if (Math.abs(localEnd.distanceAlongMm - localStart.distanceAlongMm) > 2 && Math.abs(localEnd.heightMm - localStart.heightMm) > 2) {
+        const planDistance = Math.abs(localEnd.distanceAlongMm - localStart.distanceAlongMm);
+        if (preserveShallowGravityGrade && Math.abs(localEnd.heightMm - localStart.heightMm) / planDistance <= .1) { result.push({ ...end }); return; }
         const depth = roundMm((localStart.depthMm + localEnd.depthMm) / 2);
         result.push(wallLocalToWorld(wall, localEnd.distanceAlongMm, localStart.heightMm, depth));
       }
@@ -1134,27 +1183,30 @@ function verticalEnvelopeAt(y: number, minimumY: number, maximumY: number, optio
   return { minimum: Math.max(minimumY, radius), maximum: Math.min(maximumY, wallTop - radius), directions: [1, -1] as const };
 }
 
-/** Adds a smooth vertical overpass only where a same-elevation route crosses another route. */
+/** Adds a smooth vertical overpass where level or gently graded service runs cross. */
 export function addVerticalClearanceAtCrossings(points: Vec3[], existingRoutes: Route[], clearanceMm: number, minimumY: number, maximumY: number, options: CrossingClearanceOptions = {}): Vec3[] {
   if (points.length < 2 || clearanceMm <= 0) return points;
   const result: Vec3[] = [{ ...points[0] }];
   points.slice(1).forEach((end, index) => {
     const start = points[index]; const length = Math.hypot(end.x - start.x, end.z - start.z);
-    if (length < 120 || Math.abs(start.y - end.y) > 2) { result.push({ ...end }); return; }
+    const grade = length > 0 ? Math.abs(start.y - end.y) / length : Number.POSITIVE_INFINITY;
+    if (length < 120 || grade > .1) { result.push({ ...end }); return; }
     const crossings = existingRoutes.flatMap((route) => route.points.slice(1).map((otherEnd, otherIndex) => {
-      const otherStart = route.points[otherIndex]; if (Math.abs(otherStart.y - otherEnd.y) > 2) return undefined;
+      const otherStart = route.points[otherIndex]; const otherLength = Math.hypot(otherEnd.x - otherStart.x, otherEnd.z - otherStart.z);
+      if (otherLength <= 1 || Math.abs(otherStart.y - otherEnd.y) / otherLength > .1) return undefined;
       const intersection = planSegmentIntersection(start, end, otherStart, otherEnd); if (!intersection) return undefined;
-      const otherY = otherStart.y + (otherEnd.y - otherStart.y) * intersection.secondRatio; const ownY = start.y;
+      const otherY = otherStart.y + (otherEnd.y - otherStart.y) * intersection.secondRatio; const ownY = start.y + (end.y - start.y) * intersection.firstRatio;
       return Math.abs(ownY - otherY) < clearanceMm ? { ...intersection, otherY } : undefined;
     }).filter((item): item is NonNullable<typeof item> => !!item)).sort((a, b) => a.firstRatio - b.firstRatio)
       .filter((item, crossingIndex, items) => !crossingIndex || Math.abs(item.firstRatio - items[crossingIndex - 1].firstRatio) * length > 5);
     if (!crossings.length) { result.push({ ...end }); return; }
-    const ownY = start.y; const requestedLift = Math.max(clearanceMm + 10, clearanceMm * 1.35);
+    const ownY = crossings.reduce((sum, crossing) => sum + start.y + (end.y - start.y) * crossing.firstRatio, 0) / crossings.length; const requestedLift = Math.max(clearanceMm + 10, clearanceMm * 1.35);
     const envelope = verticalEnvelopeAt(ownY, minimumY, maximumY, options);
     const averageOtherY = crossings.reduce((sum, crossing) => sum + crossing.otherY, 0) / crossings.length;
     const preferredDirection = ownY >= averageOtherY ? 1 : -1;
+    const baselineMinimum = Math.min(start.y, end.y); const baselineMaximum = Math.max(start.y, end.y);
     const liftDirection = [...envelope.directions].sort((first) => first === preferredDirection ? -1 : 1)
-      .find((direction) => direction > 0 ? ownY + requestedLift <= envelope.maximum : ownY - requestedLift >= envelope.minimum);
+      .find((direction) => direction > 0 ? baselineMaximum + requestedLift <= envelope.maximum : baselineMinimum - requestedLift >= envelope.minimum);
     // A partial bump would still collide or leave its host surface. Keep the
     // conflict explicit so the broader planner can choose another valid path.
     if (!liftDirection || envelope.minimum > envelope.maximum) { result.push({ ...end }); return; }
@@ -1191,12 +1243,13 @@ export function findRouteIntersections(routes: Route[], priorities: Partial<Reco
       if (closest.distance >= clearance) return;
       const sharedDevice = [first.sourceDeviceId, first.destinationDeviceId].some((id) => !!id && [second.sourceDeviceId, second.destinationDeviceId].includes(id));
       const bothAtEnds = (closest.firstRatio <= .015 || closest.firstRatio >= .985) && (closest.secondRatio <= .015 || closest.secondRatio >= .985);
-      const withinTerminalEnvelope = Math.min(closest.firstRatio, 1 - closest.firstRatio) * distance3(first.points[indexA], endA) <= clearance
-        && Math.min(closest.secondRatio, 1 - closest.secondRatio) * distance3(second.points[indexB], endB) <= clearance;
+      const terminalTolerance = Math.max(100, clearance * 2);
+      const withinTerminalEnvelope = Math.min(closest.firstRatio, 1 - closest.firstRatio) * distance3(first.points[indexA], endA) <= terminalTolerance
+        && Math.min(closest.secondRatio, 1 - closest.secondRatio) * distance3(second.points[indexB], endB) <= terminalTolerance;
       const parallelOverlap = axisAlignedOverlapLength(first.points[indexA], endA, second.points[indexB], endB, clearance);
       // The common terminal point itself is unavoidable, but a long shared span
       // after that terminal still needs its own physical lane.
-      if (sharedDevice && (bothAtEnds || withinTerminalEnvelope) && parallelOverlap <= clearance) return;
+      if (sharedDevice && (bothAtEnds || withinTerminalEnvelope) && parallelOverlap <= terminalTolerance) return;
       const point = { x: roundMm((closest.first.x + closest.second.x) / 2), y: roundMm((closest.first.y + closest.second.y) / 2), z: roundMm((closest.first.z + closest.second.z) / 2) };
       if (found.some((item) => item.routeAId === first.id && item.routeBId === second.id && distance3(item.point, point) <= clearance / 2)) return;
       const severity = Math.max(1, 6 - Math.min(priorities[first.serviceCategory] ?? 4, priorities[second.serviceCategory] ?? 4));
@@ -1323,9 +1376,9 @@ export function resolveRouteConflicts(route: Route, existingRoutes: Route[], pri
   const wallOnly = route.wallIds.length > 0 && (!walls.length || route.points.slice(1).every((end, index) => associatedWalls.some((wall) => routeSegmentsOnWall({ points: [route.points[index], end] }, wall).length > 0)));
   const mayApplyWholeRouteLane = !route.wallIds.length || wallOnly;
   const lateralLaneFitsServiceEnvelope = !wallOnly || routeDisplayDiameterMm(route, diameters) <= (separations[route.serviceCategory] ?? 30);
-  const lanePoints = mayApplyWholeRouteLane && lateralLaneFitsServiceEnvelope
-    ? separateCoincidentRoute(route.points, existingRoutes, laneClearance, wallOnly)
-    : separateResidualCoincidentSegments(route.points, existingRoutes, laneClearance);
+  const lanePoints = !initiallyConflictingIds.size ? route.points : mayApplyWholeRouteLane && lateralLaneFitsServiceEnvelope
+    ? separateCoincidentRoute(route.points, existingRoutes.filter((item) => initiallyConflictingIds.has(item.id)), laneClearance, wallOnly)
+    : separateResidualCoincidentSegments(route.points, existingRoutes.filter((item) => initiallyConflictingIds.has(item.id)), laneClearance);
   const laneRoute = lanePoints === route.points ? route : { ...route, points: lanePoints.map((point, order) => ({ ...point, id: 'id' in point && typeof point.id === 'string' ? point.id : crypto.randomUUID(), order })) };
   let current = laneRoute; let best = laneRoute; let bestConflicts = conflictsFor(laneRoute); const seen = new Set<string>();
   for (let attempt = 0; attempt < maximumAttempts && bestConflicts.length; attempt++) {
@@ -1565,6 +1618,74 @@ export function preferSharedWallRoute(shortest: WallRouteEntry[] | null, shared:
 
 export interface WeightedRouteSegment { start: Vec3; end: Vec3; weight: number }
 
+/**
+ * Grades a floor/ceiling run in its flow direction. The configured reference
+ * plane remains the high edge in a floor cavity and the low edge in a ceiling
+ * cavity, so the run stays concealed instead of falling back into the room.
+ */
+export function gradeRoutePlanePath(points: Vec3[], kind: RouteKind, slopePermille: number, reverseFlow: boolean, surface: 'floor' | 'ceiling', bounds: RouteSurfaceBounds, diameterMm = 0): Vec3[] {
+  if (points.length < 2 || kind === 'cable' || slopePermille <= 0) return points.map((point) => ({ ...point }));
+  const cumulative = [0];
+  points.slice(1).forEach((point, index) => cumulative.push(cumulative[index] + Math.hypot(point.x - points[index].x, point.z - points[index].z)));
+  const planLength = cumulative.at(-1) ?? 0; if (planLength <= 1) return points.map((point) => ({ ...point }));
+  const radius = Math.max(0, diameterMm) / 2; const referenceY = points.reduce((sum, point) => sum + point.y, 0) / points.length;
+  const minimum = (surface === 'floor' ? bounds.floorMinimumY : bounds.ceilingMinimumY) + radius;
+  const maximum = (surface === 'floor' ? bounds.floorMaximumY : bounds.ceilingMaximumY) - radius;
+  if (minimum > maximum) return points.map((point) => ({ ...point }));
+  const requestedDrop = planLength * slopePermille / 1000;
+  const high = surface === 'floor' ? Math.min(maximum, referenceY) : Math.min(maximum, referenceY + requestedDrop);
+  const low = surface === 'floor' ? Math.max(minimum, high - requestedDrop) : Math.max(minimum, Math.min(referenceY, high));
+  const actualDrop = Math.max(0, high - low);
+  return points.map((point, index) => {
+    const along = cumulative[index] / planLength; const flowProgress = reverseFlow ? 1 - along : along;
+    return { ...point, y: roundMm(high - actualDrop * flowProgress) };
+  });
+}
+
+/** Applies gravity grading to contiguous concealed plane and wall runs. */
+export function gradeRoutePlaneSurfaces(points: Vec3[], surfaces: string[], kind: RouteKind, slopePermille: number, reverseFlow: boolean, bounds: RouteSurfaceBounds, diameterMm = 0, walls: Wall[] = []): Vec3[] {
+  if (kind === 'cable' || slopePermille <= 0 || points.length !== surfaces.length) return points.map((point) => ({ ...point }));
+  const result = points.map((point) => ({ ...point })); const radius = Math.max(0, diameterMm) / 2;
+  for (const surface of ['floor', 'ceiling'] as const) {
+    const withinCavity = (point: Vec3) => surface === 'floor'
+      ? point.y >= bounds.floorMinimumY + radius && point.y <= bounds.floorMaximumY - radius
+      : point.y >= bounds.ceilingMinimumY + radius && point.y <= bounds.ceilingMaximumY - radius;
+    let start = 1;
+    while (start < points.length - 1) {
+      while (start < points.length - 1 && (surfaces[start] !== surface || !withinCavity(points[start]))) start++;
+      let end = start; while (end + 1 < points.length - 1 && surfaces[end + 1] === surface && withinCavity(points[end + 1])) end++;
+      if (end > start) {
+        const graded = gradeRoutePlanePath(points.slice(start, end + 1), kind, slopePermille, reverseFlow, surface, bounds, diameterMm);
+        graded.forEach((point, offset) => { result[start + offset] = point; });
+        // Surface transitions are represented by coincident controls with two
+        // associations. Carry the graded elevation into that structural point
+        // so no short counter-slope is introduced at the wall boundary.
+        for (const boundaryIndex of [start, end]) for (const neighbour of [boundaryIndex - 1, boundaryIndex + 1]) {
+          if (neighbour <= 0 || neighbour >= points.length - 1 || neighbour >= start && neighbour <= end) continue;
+          if (Math.hypot(points[neighbour].x - points[boundaryIndex].x, points[neighbour].z - points[boundaryIndex].z) <= 1 && Math.abs(points[neighbour].y - points[boundaryIndex].y) <= 2) result[neighbour] = { ...result[neighbour], y: result[boundaryIndex].y };
+        }
+      }
+      start = Math.max(end + 1, start + 1);
+    }
+  }
+  const wallById = new Map(walls.map((wall) => [wall.id, wall])); let wallStart = 1;
+  while (wallStart < points.length - 1) {
+    const startWall = wallById.get(surfaces[wallStart]); if (!startWall) { wallStart++; continue; }
+    const baseY = points[wallStart].y; let wallEnd = wallStart;
+    while (wallEnd + 1 < points.length - 1) {
+      const nextWall = wallById.get(surfaces[wallEnd + 1]); if (!nextWall || Math.abs(points[wallEnd + 1].y - baseY) > 2) break; wallEnd++;
+    }
+    const run = points.slice(wallStart, wallEnd + 1); const planLength = run.slice(1).reduce((total, point, index) => total + Math.hypot(point.x - run[index].x, point.z - run[index].z), 0);
+    if (wallEnd > wallStart && planLength > 1) {
+      const maximumY = Math.min(...surfaces.slice(wallStart, wallEnd + 1).map((surface) => wallById.get(surface)?.heightMm ?? startWall.heightMm));
+      const graded = gradeRoutePlanePath(run, kind, slopePermille, reverseFlow, 'floor', { floorMinimumY: 0, floorMaximumY: maximumY, ceilingMinimumY: maximumY, ceilingMaximumY: maximumY }, diameterMm);
+      graded.forEach((point, offset) => { result[wallStart + offset] = point; });
+    }
+    wallStart = Math.max(wallEnd + 1, wallStart + 1);
+  }
+  return result;
+}
+
 export function axisAlignedOverlapLength(firstStart: Vec3, firstEnd: Vec3, secondStart: Vec3, secondEnd: Vec3, toleranceMm = 2): number {
   if (Math.abs(firstStart.y - firstEnd.y) > toleranceMm || Math.abs(secondStart.y - secondEnd.y) > toleranceMm || Math.abs(firstStart.y - secondStart.y) > toleranceMm) return 0;
   const firstAlongX = Math.abs(firstStart.z - firstEnd.z) <= toleranceMm; const secondAlongX = Math.abs(secondStart.z - secondEnd.z) <= toleranceMm;
@@ -1609,6 +1730,47 @@ export function preferredOrthogonalPlaneRoute(start: Vec3, end: Vec3, y: number,
     return simplifyRoutePoints(result);
   };
   const candidates = rawCandidates.map(detour); return candidates.sort((one, two) => score(one) - score(two))[0];
+}
+
+/**
+ * Shortest floor/ceiling path. Unlike wall routing, a service plane has no
+ * reason to follow cardinal axes: it stays straight unless an equipment
+ * clearance rectangle actually blocks the segment.
+ */
+export function preferredDirectPlaneRoute(start: Vec3, end: Vec3, y: number, obstacles: PlaneRouteObstacle[] = [], turnPenaltyMm = 0): Vec3[] {
+  const first = { x: start.x, y, z: start.z }; const last = { x: end.x, y, z: end.z };
+  const intersectsInterior = (a: Vec3, b: Vec3, obstacle: PlaneRouteObstacle) => {
+    const inset = Math.min(1, (obstacle.maxX - obstacle.minX) / 4, (obstacle.maxZ - obstacle.minZ) / 4);
+    return segmentIntersectsRect({ x: a.x, y: a.z }, { x: b.x, y: b.z }, obstacle.minX + inset, obstacle.maxX - inset, obstacle.minZ + inset, obstacle.maxZ - inset);
+  };
+  if (!obstacles.some((obstacle) => intersectsInterior(first, last, obstacle))) return [first, last];
+  const corridorMargin = Math.max(500, Math.hypot(last.x - first.x, last.z - first.z) * .25);
+  const minX = Math.min(first.x, last.x) - corridorMargin; const maxX = Math.max(first.x, last.x) + corridorMargin;
+  const minZ = Math.min(first.z, last.z) - corridorMargin; const maxZ = Math.max(first.z, last.z) + corridorMargin;
+  const relevant = obstacles.filter((obstacle) => obstacle.maxX >= minX && obstacle.minX <= maxX && obstacle.maxZ >= minZ && obstacle.minZ <= maxZ);
+  const nodes: Vec3[] = [first, last];
+  relevant.forEach((obstacle) => {
+    const margin = 2;
+    nodes.push(
+      { x: obstacle.minX - margin, y, z: obstacle.minZ - margin }, { x: obstacle.minX - margin, y, z: obstacle.maxZ + margin },
+      { x: obstacle.maxX + margin, y, z: obstacle.minZ - margin }, { x: obstacle.maxX + margin, y, z: obstacle.maxZ + margin }
+    );
+  });
+  const visible = (a: Vec3, b: Vec3) => relevant.every((obstacle) => !intersectsInterior(a, b, obstacle));
+  const distance = nodes.map(() => Number.POSITIVE_INFINITY); const previous = nodes.map(() => -1); const visited = nodes.map(() => false); distance[0] = 0;
+  for (let iteration = 0; iteration < nodes.length; iteration++) {
+    let current = -1; let currentDistance = Number.POSITIVE_INFINITY;
+    distance.forEach((value, index) => { if (!visited[index] && value < currentDistance) { current = index; currentDistance = value; } });
+    if (current < 0 || current === 1) break; visited[current] = true;
+    nodes.forEach((candidate, index) => {
+      if (visited[index] || index === current || !visible(nodes[current], candidate)) return;
+      const bendCost = current === 0 ? 0 : Math.max(0, turnPenaltyMm); const next = currentDistance + distance3(nodes[current], candidate) + bendCost;
+      if (next < distance[index]) { distance[index] = next; previous[index] = current; }
+    });
+  }
+  if (!Number.isFinite(distance[1])) return preferredOrthogonalPlaneRoute(first, last, y, [], relevant, turnPenaltyMm);
+  const path: Vec3[] = []; for (let cursor = 1; cursor >= 0; cursor = previous[cursor]) { path.push(nodes[cursor]); if (cursor === 0) break; }
+  return simplifyRoutePoints(path.reverse());
 }
 
 export function shortestWallRoute(walls: Wall[], sourceWallId: string, destinationWallId: string, start: Vec3, end: Vec3, connectionToleranceMm = 200, edgePenalty?: (wallId: string) => number): WallRouteEntry[] | null {

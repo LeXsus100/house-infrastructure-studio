@@ -57,13 +57,15 @@ const defs: Array<[string, string, ServiceCategory, DeviceType['shape'], Dimensi
   ['server', 'Server', 'data', 'box', mm(480, 88, 600)],
   ['nas', 'NAS', 'data', 'box', mm(220, 180, 280)],
   ['custom-network', 'Custom network device', 'data', 'box', mm(160, 100, 80)],
-  ['security-camera', 'Security camera', 'cctv', 'camera', mm(180, 100, 100)],
+  ['security-camera', 'Outdoor camera', 'cctv', 'camera', mm(180, 100, 100)],
+  ['indoor-camera', 'Indoor camera', 'cctv', 'camera', mm(90, 120, 90)],
+  ['doorbell', 'Doorbell', 'security', 'plate', mm(95, 145, 35)],
+  ['doorbell-speaker', 'PoE doorbell speaker', 'security', 'plate', mm(140, 140, 45)],
   ['door-sensor', 'Door sensor', 'security', 'plate', mm(80, 20, 20)],
   ['motion-sensor', 'Motion sensor', 'sensors', 'cylinder', mm(100, 70, 100)],
   ['alarm-siren', 'Alarm siren', 'security', 'box', mm(180, 140, 70)],
   ['alarm-panel', 'Alarm control panel', 'security', 'box', mm(300, 400, 100)],
   ['intercom', 'Intercom', 'security', 'plate', mm(120, 220, 35)],
-  ['video-intercom', 'Video intercom', 'security', 'plate', mm(160, 240, 40)],
   ['smoke-detector', 'Smoke detector', 'sensors', 'cylinder', mm(120, 45, 120)],
   ['co-detector', 'Carbon monoxide detector', 'sensors', 'plate', mm(120, 120, 35)],
   ['water-leak-sensor', 'Water leak sensor', 'sensors', 'box', mm(70, 25, 70)],
@@ -131,22 +133,25 @@ const furnitureIds = new Set(defs.map(([id]) => id).filter((id) => id.startsWith
 const structureIds = new Set(['column', 'door-opening', 'window-opening', 'staircase']);
 const defaultAssociation: Partial<Record<string, AssociationType>> = {
   'access-point': 'ceiling', 'smoke-detector': 'ceiling', 'multi-detector': 'ceiling', 'light-point': 'ceiling',
-  'drain-point': 'floor', 'water-leak-sensor': 'floor', 'floor-transition': 'floor', 'solar-panel': 'floor', 'tv-antenna': 'floor', 'rack': 'floor'
+  'drain-point': 'floor', 'water-leak-sensor': 'floor', 'floor-transition': 'floor', 'solar-panel': 'floor', 'tv-antenna': 'floor', 'rack': 'floor', 'indoor-camera': 'floor'
 };
-const defaultBackFace: Partial<Record<string, DeviceType['defaultBackFace']>> = { 'access-point': 'back' };
+const defaultBackFace: Partial<Record<string, DeviceType['defaultBackFace']>> = { 'access-point': 'back', 'indoor-camera': 'bottom' };
 const defaultPorts: Partial<Record<string, DevicePortTemplate[]>> = {
   'power-outlet': [port('230 V output', 'electrical', 'output', 'back', { x: 0, y: 0, z: -18 }, 'CEE 7/3')],
   'junction-box': [port('Circuit input', 'electrical', 'bidirectional', 'back', { x: -25, y: 0, z: -25 }, 'terminal', 35), port('Circuit output', 'electrical', 'bidirectional', 'back', { x: 25, y: 0, z: -25 }, 'terminal', 35)],
   'switch': [port('230 V input', 'electrical', 'input', 'back', { x: -20, y: -20, z: -15 }, 'terminal'), port('Switched output', 'electrical', 'output', 'back', { x: 20, y: -20, z: -15 }, 'terminal')],
   'light-point': [port('Switched power', 'electrical', 'input', 'top', { x: 0, y: 30, z: 0 }, 'terminal')],
   'electrical-panel': [port('Mains input', 'electrical', 'input', 'back', { x: -180, y: -300, z: -90 }, 'terminal', 45), port('Circuit output', 'electrical', 'output', 'bottom', { x: 180, y: -400, z: 0 }, 'terminal', 35)],
-  'solar-panel': [port('DC output', 'electrical', 'output', 'back', { x: 620, y: 400, z: -380 }, 'MC4')],
+  'solar-panel': [port('DC output', 'electrical', 'output', 'back', { x: 620, y: 0, z: -380 }, 'MC4')],
   'access-point': [port('PoE / Ethernet', 'data', 'input', 'back', { x: 0, y: -45, z: -18 }, 'RJ45')],
   'tv-antenna': [port('RF output', 'data', 'output', 'bottom', { x: 0, y: -400, z: 0 }, 'IEC coaxial')],
   'fwa-antenna': [port('PoE / Ethernet', 'data', 'bidirectional', 'back', { x: 0, y: -110, z: -45 }, 'RJ45')],
   'network-switch': [port('Ethernet', 'data', 'bidirectional', 'front', { x: 0, y: 0, z: 100 }, 'RJ45'), port('Power', 'electrical', 'input', 'back', { x: 170, y: 0, z: -100 }, 'IEC C14')],
   'rack': [port('Mains input', 'electrical', 'input', 'back', { x: 250, y: -470, z: -500 }, 'IEC / terminal'), port('Data trunk', 'data', 'bidirectional', 'back', { x: -250, y: -470, z: -500 }, 'RJ45 / fibre')],
   'security-camera': [port('PoE / Ethernet', 'data', 'input', 'back', { x: 0, y: 0, z: -50 }, 'RJ45')],
+  'indoor-camera': [port('PoE / Ethernet', 'data', 'input', 'bottom', { x: 0, y: -60, z: 0 }, 'RJ45')],
+  'doorbell': [port('PoE / Ethernet', 'data', 'bidirectional', 'back', { x: 0, y: -48, z: -18 }, 'RJ45')],
+  'doorbell-speaker': [port('PoE / Ethernet', 'data', 'input', 'back', { x: 0, y: -45, z: -23 }, 'RJ45')],
   'indoor-unit': [
     port('HVAC inlet', 'hvac', 'input', 'back', { x: -300, y: -80, z: -110 }, 'flare'),
     port('HVAC outlet', 'hvac', 'output', 'back', { x: -180, y: -80, z: -110 }, 'flare'),
@@ -189,7 +194,7 @@ const defaultPorts: Partial<Record<string, DevicePortTemplate[]>> = {
 };
 
 const unlimitedPortTypes = new Set(['junction-box', 'electrical-panel']);
-const builtInRevisions: Partial<Record<string, number>> = { 'indoor-unit': 2, 'outdoor-unit': 2, 'heat-pump': 2, rack: 1 };
+const builtInRevisions: Partial<Record<string, number>> = { 'indoor-unit': 2, 'outdoor-unit': 2, 'heat-pump': 2, 'solar-panel': 1, rack: 1 };
 
 export const DEFAULT_DEVICE_TYPES: DeviceType[] = defs.map(([id, name, serviceCategory, shape, defaultDimensions]) => ({
   id, builtInRevision: builtInRevisions[id], categoryId: categoryIdForService(serviceCategory),
